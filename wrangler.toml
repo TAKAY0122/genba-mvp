@@ -1,0 +1,19 @@
+name = "genba-mvp"
+main = "worker/index.js"
+compatibility_date = "2025-06-01"
+
+# ビルド済みフロントエンドを静的配信 (SPA)
+[assets]
+directory = "./dist"
+not_found_handling = "single-page-application"
+binding = "ASSETS"
+run_worker_first = ["/api/*"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "genba-mvp"
+database_id = "REPLACE_WITH_YOUR_D1_ID"   # ← `npm run db:create` の出力で置き換える
+
+# AI提案を使う場合(任意):
+#   npx wrangler secret put ANTHROPIC_API_KEY
+# 未設定の場合はルールベース提案に自動フォールバックします
