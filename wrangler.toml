@@ -12,7 +12,7 @@ run_worker_first = ["/api/*"]
 [[d1_databases]]
 binding = "DB"
 database_name = "genba-mvp"
-database_id = "8e00cc85-fdd8-46dc-a421-98aa8cc5004d"   # ← `npm run db:create` の出力で置き換える
+database_id = "8e00cc85-fdd8-46dc-a421-98aa8cc5004d"
 
 # AI提案を使う場合(任意):
 #   npx wrangler secret put ANTHROPIC_API_KEY

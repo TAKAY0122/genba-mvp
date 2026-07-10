@@ -2,6 +2,7 @@
 
 const LS_SESSION = "genba.session";
 const LS_PTOKENS = "genba.ptokens"; // { [teamId]: "pt_..." }
+const LS_LAST_TEAM = "genba.lastTeam";
 
 export const store = {
   getSession: () => localStorage.getItem(LS_SESSION) || "",
@@ -12,6 +13,8 @@ export const store = {
     m[teamId] = token;
     localStorage.setItem(LS_PTOKENS, JSON.stringify(m));
   },
+  getLastTeam: () => localStorage.getItem(LS_LAST_TEAM) || "",
+  setLastTeam: (teamId) => (teamId ? localStorage.setItem(LS_LAST_TEAM, teamId) : localStorage.removeItem(LS_LAST_TEAM)),
 };
 
 async function call(method, path, body, token) {

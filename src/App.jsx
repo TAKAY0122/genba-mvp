@@ -110,7 +110,14 @@ export default function App() {
       const m = location.pathname.match(/^\/join\/([A-Za-z0-9-]+)/);
       if (m) { setJoinCode(m[1]); setPhase("join"); return; }
       if (store.getSession()) {
-        try { const d = await api.me(); setUser(d.user); setPhase("teams"); return; } catch (e) { store.setSession(null); }
+        try {
+          const d = await api.me();
+          setUser(d.user);
+          const last = store.getLastTeam();
+          if (last) { setTeamId(last); setPhase("team"); return; } // 続きから(前回開いていたチームへ自動で入る)
+          setPhase("teams");
+          return;
+        } catch (e) { store.setSession(null); }
       }
       // ゲスト: 参加済みチームがあれば復帰
       const pt = store.getPTokens();
@@ -120,8 +127,8 @@ export default function App() {
     })();
   }, []);
 
-  const openTeam = (id) => { setTeamId(id); setPhase("team"); };
-  const logout = async () => { await api.logout(); store.setSession(null); setUser(null); setTeamId(null); setPhase("login"); };
+  const openTeam = (id) => { store.setLastTeam(id); setTeamId(id); setPhase("team"); };
+  const logout = async () => { await api.logout(); store.setSession(null); store.setLastTeam(null); setUser(null); setTeamId(null); setPhase("login"); };
 
   if (phase === "boot") return <Splash />;
   if (phase === "login") return <AuthScreen say={say} fail={fail} onLoggedIn={(u) => { setUser(u); setPhase("teams"); }} onGuestCode={(code) => { setJoinCode(code); setPhase("join"); }} />;
@@ -129,7 +136,9 @@ export default function App() {
     onJoined={(tid) => openTeam(tid)}
     onBack={() => setPhase(user ? "teams" : "login")} />;
   if (phase === "teams") return <TeamsScreen user={user} say={say} fail={fail} openTeam={openTeam}
-    onJoinByCode={(code) => { setJoinCode(code); setPhase("join"); }} logout={logout} />;
+    onJoinByCode={(code) => { setJoinCode(code); setPhase("join"); }} logout={logout}
+    onOpenMyPage={() => setPhase("mypage")} />;
+  if (phase === "mypage") return <GlobalMyPageScreen user={user} say={say} fail={fail} onBack={() => setPhase("teams")} />;
   return <TeamApp teamId={teamId} user={user} say={say} fail={fail} toast={toast}
     exitTeam={() => setPhase(user ? "teams" : "login")} logout={logout} />;
 }
@@ -196,7 +205,7 @@ function AuthScreen({ say, fail, onLoggedIn, onGuestCode }) {
 }
 
 /* ================================ チーム一覧 / 作成 ================================ */
-function TeamsScreen({ user, say, fail, openTeam, onJoinByCode, logout }) {
+function TeamsScreen({ user, say, fail, openTeam, onJoinByCode, logout, onOpenMyPage }) {
   const [teams, setTeams] = useState(null);
   const [view, setView] = useState("list"); // list / create / share
   const [created, setCreated] = useState(null);
@@ -214,7 +223,12 @@ function TeamsScreen({ user, say, fail, openTeam, onJoinByCode, logout }) {
     </Shell>
   );
   return (
-    <Shell title="チーム一覧" right={<button onClick={logout} className="text-xs font-bold text-rose-600">ログアウト</button>}>
+    <Shell title="チーム一覧" right={
+      <div className="flex items-center gap-1">
+        <button onClick={onOpenMyPage} className="text-xs font-bold text-slate-200 bg-slate-800 px-2.5 py-1.5 rounded-lg">🪪 マイページ</button>
+        <button onClick={logout} className="text-xs font-bold text-rose-400 px-2 py-1.5">ログアウト</button>
+      </div>
+    }>
       <div className="space-y-3">
         <div className="flex gap-2">
           <Btn className="flex-1" onClick={() => setView("create")}>＋ チーム作成</Btn>
@@ -359,6 +373,7 @@ function JoinScreen({ code, user, say, fail, onJoined, onBack }) {
 function TeamApp({ teamId, user, say, fail, toast, exitTeam, logout }) {
   const [state, setState] = useState(null);
   const [loadErr, setLoadErr] = useState("");
+  const [fatalErr, setFatalErr] = useState(""); // 初回成功後に致命的エラーが続いた場合
   const [now, setNow] = useState(Date.now());
   const [route, setRoute] = useState(null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -366,15 +381,26 @@ function TeamApp({ teamId, user, say, fail, toast, exitTeam, logout }) {
   const [ai, setAi] = useState({ list: null, loading: false, note: "" });
   const [auditLogs, setAuditLogs] = useState(null);
   const pollRef = useRef(null);
+  const routeRef = useRef(null); // routeの最新値をタイマーの再生成なしで参照するため
+  routeRef.current = route;
+  const failCountRef = useRef(0);
 
   const refresh = useCallback(async () => {
     try {
       const d = await api.state(teamId);
       setState(d);
       setLoadErr("");
-      if (route === null) setRoute(d.me.role === "owner" || d.me.role === "admin" ? "cc" : "member");
-    } catch (e) { setLoadErr(e.message); }
-  }, [teamId, route]);
+      failCountRef.current = 0;
+      if (routeRef.current === null) setRoute(d.me.role === "owner" || d.me.role === "admin" ? "cc" : "member");
+    } catch (e) {
+      setLoadErr(e.message);
+      // 参加者ではなくなった/チームが見つからない、が3回連続 → 致命的エラーとして案内画面を出す
+      if (e.code === "AUTH-002" || e.code === "DATA-001") {
+        failCountRef.current += 1;
+        if (failCountRef.current >= 3) { setFatalErr(e.message); clearInterval(pollRef.current); }
+      }
+    }
+  }, [teamId]);
 
   useEffect(() => {
     refresh();
@@ -406,8 +432,23 @@ function TeamApp({ teamId, user, say, fail, toast, exitTeam, logout }) {
     });
   }, [state, now]);
 
+  if (fatalErr) return (
+    <Shell title="アクセスできません">
+      <Card className="p-6 text-center space-y-3">
+        <div className="text-3xl">🚪</div>
+        <p className="text-sm text-rose-600 font-bold">{fatalErr}</p>
+        <p className="text-xs text-slate-500">チームが削除されたか、参加者情報が確認できなくなりました。</p>
+        <Btn className="w-full" onClick={exitTeam}>チーム一覧に戻る</Btn>
+      </Card>
+    </Shell>
+  );
   if (loadErr && !state) return (
-    <Shell title="エラー" onBack={exitTeam}><Card className="p-6 text-center text-sm text-rose-600 font-bold">{loadErr}</Card></Shell>
+    <Shell title="エラー" onBack={exitTeam}>
+      <Card className="p-6 text-center space-y-3">
+        <p className="text-sm text-rose-600 font-bold">{loadErr}</p>
+        <Btn className="w-full" onClick={refresh}>もう一度読み込む</Btn>
+      </Card>
+    </Shell>
   );
   if (!state || route === null) return <Splash />;
 
@@ -485,12 +526,17 @@ function TeamApp({ teamId, user, say, fail, toast, exitTeam, logout }) {
       onToggleRole={(pid) => run(() => api.toggleRole(teamId, pid), "権限を変更しました")}
       onNotifyShorts={(shorts) => run(async () => { for (const p of shorts) await api.sendNotify(teamId, { type: "休憩不足", text: `${p.name}さんの休憩が不足しています(残り${p.remain}分)` }); }, "休憩不足通知を送信しました")}
       onCloseVoting={() => { if (confirm("現場を終了し、ポイント投票を締め切りますか?")) run(() => api.closeVoting(teamId), "投票を締め切りました"); }}
-      onDeleteTeam={() => { if (confirm("チームを削除しますか?(監査ログは削除されません)")) run(() => api.deleteTeam(teamId), "チームを削除しました").then(exitTeam); }} />,
+      onDeleteTeam={async () => {
+        if (!confirm("チームを削除しますか?(監査ログは削除されません)")) return;
+        clearInterval(pollRef.current); // 削除後に自分の状態を再取得してエラーになるのを防ぐ
+        try { await api.deleteTeam(teamId); say("チームを削除しました"); } catch (e) { fail(e); }
+        exitTeam();
+      }} />,
     assign: <AssignScreen enriched={enriched} now={now} setModal={setModal}
       onDelete={(aid) => { if (confirm("この配置を削除しますか?")) run(() => api.delAssign(teamId, aid), "配置を削除しました"); }} />,
     timeline: <Timeline enriched={enriched} now={now} team={team} />,
     vote: <Vote me={state.me} enriched={enriched} voting={state.voting} setRoute={goto}
-      onVote={(target) => run(() => api.vote(teamId, target), "投票しました(1人1回)")} />,
+      onVote={(target) => run(() => api.vote(teamId, target), "投票しました(1人1回)").then(() => goto("voteResult"))} />,
     voteResult: <VoteResult state={state} enriched={enriched} isAdmin={isAdmin} me={state.me}
       onCloseVoting={() => { if (confirm("投票を締め切りますか?")) run(() => api.closeVoting(teamId), "投票を締め切りました"); }} />,
     notify: <NotifyScreen state={state} isAdmin={isAdmin}
@@ -1194,6 +1240,12 @@ function Vote({ me, enriched, voting, setRoute, onVote }) {
       <Btn color="slate" className="w-full" onClick={() => setRoute("voteResult")}>結果ページへ</Btn>
     </Card>
   );
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    setBusy(true);
+    await onVote(pick);
+    setBusy(false);
+  };
   return (
     <div className="space-y-3 max-w-md mx-auto">
       <h2 className="font-bold text-lg px-1">🗳 ポイント投票</h2>
@@ -1216,7 +1268,7 @@ function Vote({ me, enriched, voting, setRoute, onVote }) {
           </button>
         ))}
       </div>
-      <Btn big className="w-full" disabled={!pick} onClick={() => onVote(pick)}>この人に投票する(1人1回)</Btn>
+      <Btn big className="w-full" disabled={!pick || busy} onClick={submit}>{busy ? "投票中..." : "この人に投票する(1人1回)"}</Btn>
     </div>
   );
 }
@@ -1264,7 +1316,77 @@ function VoteResult({ state, enriched, isAdmin, me, onCloseVoting }) {
   );
 }
 
-/* ================================ マイページ・バッジ ================================ */
+/* ================================ マイページ(トップレベル・チーム不要) ================================ */
+function GlobalMyPageScreen({ user, say, fail, onBack }) {
+  const [my, setMy] = useState(null);
+  useEffect(() => { api.mypage().then(setMy).catch(fail); }, []);
+  const total = my?.user?.total_points ?? 0;
+  const nextMilestone = (Math.floor(total / 10) + 1) * 10;
+  return (
+    <Shell title="マイページ" onBack={onBack}>
+      <div className="space-y-3">
+        <Card className="p-4 flex items-center gap-3">
+          <span className="w-12 h-12 rounded-full bg-indigo-600 text-white text-lg font-bold flex items-center justify-center">{user?.name?.[0]}</span>
+          <div>
+            <div className="font-bold">{user?.name}</div>
+            <div className="text-xs text-slate-500">{user?.email}</div>
+          </div>
+        </Card>
+
+        {my === null && <Card className="p-6 text-center text-sm text-slate-400">読み込み中...</Card>}
+
+        {my && (
+          <>
+            <div className="grid grid-cols-3 gap-2">
+              {[["参加現場数", `${my.user.sites_count}現場`], ["累計勤務時間", fmtMin(my.user.total_work_min)], ["累計ポイント", `${total}P`]].map(([k, v]) => (
+                <Card key={k} className="p-3 text-center">
+                  <div className="text-lg font-bold">{v}</div>
+                  <div className="text-xs font-bold text-slate-500">{k}</div>
+                </Card>
+              ))}
+            </div>
+
+            <Card className="p-4">
+              <div className="flex items-center justify-between text-xs font-bold mb-1">
+                <span className="text-slate-700">💎 次の10P到達まで</span>
+                <span className="text-indigo-700 tabular-nums">{total}P / {nextMilestone}P</span>
+              </div>
+              <div className="h-2.5 bg-slate-100 rounded-full overflow-hidden">
+                <div className="h-full bg-indigo-500" style={{ width: `${((total % 10) / 10) * 100}%` }} />
+              </div>
+            </Card>
+
+            <Card className="p-4">
+              <div className="text-sm font-bold text-slate-700 mb-2">🎖 獲得バッジ</div>
+              {my.badges.length === 0 && <p className="text-xs text-slate-400">まだバッジがありません。現場に参加してポイントを獲得しましょう。</p>}
+              <div className="flex flex-wrap gap-2">
+                {my.badges.map((b) => (
+                  <span key={b} className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-100 text-sm font-bold">
+                    {b}<span className="text-xs font-normal text-slate-500">{BADGE_INFO[b] || ""}</span>
+                  </span>
+                ))}
+              </div>
+              <p className="text-slate-400 mt-2" style={{ fontSize: 10 }}>名前の前に表示するバッジは、各チームの「マイページ・バッジ」から選べます。</p>
+            </Card>
+
+            <Card className="p-4">
+              <div className="text-sm font-bold text-slate-700 mb-2">📁 過去の参加現場</div>
+              {my.history.length === 0 && <p className="text-xs text-slate-400">まだ終了した現場がありません。</p>}
+              {my.history.map((h, i) => (
+                <div key={i} className="py-2 border-b border-slate-50">
+                  <div className="flex justify-between text-sm font-bold"><span>{h.site_name}</span><span className="text-indigo-700">+{h.today_points}P</span></div>
+                  <div className="text-xs text-slate-400">{h.event_date} / {h.today_rank}位</div>
+                </div>
+              ))}
+            </Card>
+          </>
+        )}
+      </div>
+    </Shell>
+  );
+}
+
+/* ================================ マイページ・バッジ(チーム内) ================================ */
 function MyPage({ p, team, hasAccount, onSetBadge }) {
   const [my, setMy] = useState(null);
   useEffect(() => { if (hasAccount) api.mypage().then(setMy).catch(() => {}); }, [hasAccount]);

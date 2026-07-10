@@ -493,7 +493,11 @@ app.get("/api/v1/mypage", async (c) => {
      FROM participants p JOIN teams t ON t.id = p.team_id
      WHERE p.user_id = ? AND t.voting_closed = 1 ORDER BY t.event_date DESC LIMIT 30`
   ).bind(u.id).all();
-  return ok(c, { user: u, history: results });
+  // 参加した全チームの獲得バッジを重複なく集計(チームに入らなくても実績が見られるように)
+  const badgeRows = await c.env.DB.prepare("SELECT badges FROM participants WHERE user_id = ?").bind(u.id).all();
+  const badgeSet = new Set();
+  badgeRows.results.forEach((r) => JSON.parse(r.badges || "[]").forEach((b) => badgeSet.add(b)));
+  return ok(c, { user: u, history: results, badges: [...badgeSet] });
 });
 
 /* ================================ AI提案 ================================ */
