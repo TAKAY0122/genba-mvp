@@ -139,14 +139,25 @@ app.get("/api/v1/me", async (c) => {
 app.post("/api/v1/teams", async (c) => {
   const u = c.get("user");
   if (!u) return ng(c, "AUTH-001", "チーム作成にはログインが必要です。", 401);
-  const { siteName, venueName, section, date } = await c.req.json();
+  const { siteName, venueName, section, date, aiEnabled } = await c.req.json();
   if (!siteName || !venueName || !date) return ng(c, "VAL-001", "現場名・会場名・開催日は必須です。");
   const id = uid("t_");
   const code = uid().slice(0, 8).toUpperCase();
   await c.env.DB.prepare(
-    "INSERT INTO teams (id, code, site_name, venue_name, section, event_date, owner_user_id, created_at) VALUES (?,?,?,?,?,?,?,?)"
-  ).bind(id, code, siteName, venueName, section || "", date, u.id, now()).run();
-  return ok(c, { team: { id, code, siteName, venueName, section, date } });
+    "INSERT INTO teams (id, code, site_name, venue_name, section, event_date, owner_user_id, ai_enabled, created_at) VALUES (?,?,?,?,?,?,?,?,?)"
+  ).bind(id, code, siteName, venueName, section || "", date, u.id, aiEnabled ? 1 : 0, now()).run();
+  return ok(c, { team: { id, code, siteName, venueName, section, date, aiEnabled: !!aiEnabled } });
+});
+
+/* AI提案のON/OFF切り替え(オーナー・管理者) */
+app.patch("/api/v1/teams/:id/ai-enabled", async (c) => {
+  const teamId = c.req.param("id");
+  const me = await resolveParticipant(c, teamId);
+  if (!isAdmin(me)) return ng(c, "AUTH-002", "この設定は管理者のみ変更できます。", 403);
+  const { enabled } = await c.req.json();
+  await c.env.DB.prepare("UPDATE teams SET ai_enabled = ? WHERE id = ?").bind(enabled ? 1 : 0, teamId).run();
+  await audit(c.env, teamId, actorName(me), "AI提案設定", "AI提案の切り替え", "", enabled ? "ON" : "OFF");
+  return ok(c, { aiEnabled: !!enabled });
 });
 
 app.get("/api/v1/teams", async (c) => {
@@ -216,7 +227,7 @@ app.get("/api/v1/teams/:id/state", async (c) => {
   ]);
   const readSet = new Set(reads.results.map((r) => r.notification_id));
   return ok(c, {
-    team: { id: team.id, code: team.code, siteName: team.site_name, venueName: team.venue_name, section: team.section, date: team.event_date, votingClosed: !!team.voting_closed },
+    team: { id: team.id, code: team.code, siteName: team.site_name, venueName: team.venue_name, section: team.section, date: team.event_date, votingClosed: !!team.voting_closed, aiEnabled: !!team.ai_enabled },
     me: { id: me.id, role: me.role, name: me.name, hasAccount: !!me.user_id },
     participants: parts.results.map((p) => ({
       id: p.id, name: p.name, role: p.role, hasAccount: !!p.user_id,
@@ -522,6 +533,8 @@ app.post("/api/v1/teams/:id/ai-suggest", async (c) => {
   const teamId = c.req.param("id");
   const me = await resolveParticipant(c, teamId);
   if (!isAdmin(me)) return ng(c, "AUTH-002", "AI提案は管理者のみ利用できます。", 403);
+  const team = await c.env.DB.prepare("SELECT ai_enabled FROM teams WHERE id = ?").bind(teamId).first();
+  if (!team?.ai_enabled) return ng(c, "AUTH-002", "このチームはAI提案がOFFになっています。システム設定からONにできます。", 403);
 
   const t = now();
   const parts = (await c.env.DB.prepare("SELECT * FROM participants WHERE team_id = ?").bind(teamId).all()).results;

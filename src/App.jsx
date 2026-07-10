@@ -275,7 +275,7 @@ const Shell = ({ title, children, onBack, right }) => (
 
 function CreateTeamForm({ fail, onCreated }) {
   const today = new Date().toISOString().slice(0, 10);
-  const [f, setF] = useState({ siteName: "", venueName: "", section: "", date: today });
+  const [f, setF] = useState({ siteName: "", venueName: "", section: "", date: today, aiEnabled: false });
   const [busy, setBusy] = useState(false);
   const ok = f.siteName && f.venueName && f.date;
   const submit = async () => {
@@ -289,6 +289,16 @@ function CreateTeamForm({ fail, onCreated }) {
       <Field label="会場名 *"><input className={inputCls} value={f.venueName} onChange={(e) => setF({ ...f, venueName: e.target.value })} placeholder="例:大阪城ホール" /></Field>
       <Field label="セクション名(任意)"><input className={inputCls} value={f.section} onChange={(e) => setF({ ...f, section: e.target.value })} placeholder="例:運営" /></Field>
       <Field label="開催日 *"><input type="date" className={inputCls} value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} /></Field>
+      <div className="flex items-center justify-between bg-violet-50 border border-violet-200 rounded-lg px-3 py-3">
+        <div>
+          <div className="text-sm font-bold text-violet-800">✨ AI提案を使う</div>
+          <div className="text-xs text-violet-600 mt-0.5">休憩不足の解消などをAIが分析して提案します(あとから設定で切り替え可能)</div>
+        </div>
+        <button onClick={() => setF({ ...f, aiEnabled: !f.aiEnabled })}
+          className={`shrink-0 w-12 h-7 rounded-full transition relative ${f.aiEnabled ? "bg-violet-600" : "bg-slate-300"}`}>
+          <span className="absolute top-0.5 w-6 h-6 rounded-full bg-white transition-all" style={{ left: f.aiEnabled ? 22 : 2 }} />
+        </button>
+      </div>
       <Btn className="w-full" big disabled={!ok || busy} onClick={submit}>{busy ? "作成中..." : "チームを作成して共有URLを発行"}</Btn>
     </Card>
   );
@@ -488,6 +498,7 @@ function TeamApp({ teamId, user, say, fail, toast, exitTeam, logout }) {
     () => api.addAssign(teamId, { pid: s.pid, start: s.start, end: s.end, name: s.name || "休憩予定", note: "AI提案より適用" }),
     "提案を配置に適用しました"
   ).then(() => setAi((a) => ({ ...a, list: (a.list || []).filter((x) => x !== s) })));
+  const toggleAi = () => run(() => api.setAiEnabled(teamId, !team.aiEnabled), team.aiEnabled ? "AI提案をOFFにしました" : "AI提案をONにしました");
 
   const loadAudit = async () => { try { const d = await api.auditLogs(teamId); setAuditLogs(d.logs); } catch (e) { fail(e); } };
 
@@ -512,7 +523,7 @@ function TeamApp({ teamId, user, say, fail, toast, exitTeam, logout }) {
 
   const screens = {
     cc: <CommandCenter team={team} now={now} kpi={kpi} enriched={enriched} posSummary={posSummary} state={state} setRoute={goto}
-      ai={ai} runAI={runAI} applySuggestion={applySuggestion}
+      ai={ai} runAI={runAI} applySuggestion={applySuggestion} onToggleAi={toggleAi}
       onBreakEnd={(pid) => run(() => api.breakEnd(teamId, pid), "勤務に戻しました")} />,
     member: me && <MemberScreen p={me} now={now} team={team} setRoute={goto}
       onBreakStart={() => run(() => api.breakStart(teamId, me.id), "休憩を開始しました")}
@@ -520,10 +531,11 @@ function TeamApp({ teamId, user, say, fail, toast, exitTeam, logout }) {
       onCheckout={() => run(() => api.checkout(teamId, me.id), "退勤を記録しました")} />,
     chat: <ChatScreen state={state} me={state.me} now={now}
       onSend={(text) => run(() => api.sendChat(teamId, text))} />,
-    ai: <AIScreen ai={ai} runAI={runAI} applySuggestion={applySuggestion} />,
-    dash: <Dashboard enriched={enriched} isOwner={isOwner} votingClosed={team.votingClosed} setRoute={goto} setModal={setModal}
+    ai: <AIScreen team={team} ai={ai} runAI={runAI} applySuggestion={applySuggestion} onToggleAi={toggleAi} />,
+    dash: <Dashboard team={team} enriched={enriched} isOwner={isOwner} votingClosed={team.votingClosed} setRoute={goto} setModal={setModal}
       onCheckout={(pid, name) => { if (confirm(`${name} を代理退勤させますか?(監査ログに記録)`)) run(() => api.checkout(teamId, pid), "代理退勤を記録しました"); }}
       onToggleRole={(pid) => run(() => api.toggleRole(teamId, pid), "権限を変更しました")}
+      onToggleAi={toggleAi}
       onNotifyShorts={(shorts) => run(async () => { for (const p of shorts) await api.sendNotify(teamId, { type: "休憩不足", text: `${p.name}さんの休憩が不足しています(残り${p.remain}分)` }); }, "休憩不足通知を送信しました")}
       onCloseVoting={() => { if (confirm("現場を終了し、ポイント投票を締め切りますか?")) run(() => api.closeVoting(teamId), "投票を締め切りました"); }}
       onDeleteTeam={async () => {
@@ -641,8 +653,8 @@ function TeamApp({ teamId, user, say, fail, toast, exitTeam, logout }) {
 }
 
 /* ================================ Command Center ================================ */
-function CommandCenter({ team, now, kpi, enriched, posSummary, state, setRoute, ai, runAI, applySuggestion, onBreakEnd }) {
-  useEffect(() => { if (!ai.list && !ai.loading) runAI(); }, []); // 初回自動分析
+function CommandCenter({ team, now, kpi, enriched, posSummary, state, setRoute, ai, runAI, applySuggestion, onBreakEnd, onToggleAi }) {
+  useEffect(() => { if (team.aiEnabled && !ai.list && !ai.loading) runAI(); }, [team.aiEnabled]); // ONの場合のみ初回自動分析
   const shorts = enriched.filter((p) => p.shortage);
   const alerts = [
     ...shorts.map((p) => ({ level: "High", text: `${dName(p)}さんの休憩が不足(残り${p.remain}分)` })),
@@ -690,28 +702,40 @@ function CommandCenter({ team, now, kpi, enriched, posSummary, state, setRoute, 
       )}
 
       <Card className="overflow-hidden border-violet-200">
-        <div className="px-4 pt-3 pb-1 flex items-center justify-between bg-violet-50">
-          <h3 className="text-sm font-bold text-violet-800">✨ AI提案</h3>
-          <div className="flex gap-2 items-center pb-1">
-            <button onClick={runAI} disabled={ai.loading} className="text-xs font-bold text-violet-700 disabled:opacity-40">{ai.loading ? "分析中..." : "🔄 再分析"}</button>
-            <button onClick={() => setRoute("ai")} className="text-xs font-bold text-violet-700">すべて見る</button>
-          </div>
-        </div>
-        <div className="p-3 space-y-2">
-          {ai.loading && <p className="text-xs text-slate-400 px-1">AIが現場状況を分析しています...</p>}
-          {!ai.loading && (ai.list || []).slice(0, 3).map((s, i) => (
-            <div key={i} className="flex items-start gap-2 bg-slate-50 rounded-lg px-3 py-2">
-              <span className="text-base mt-0.5">{s.kind === "break" ? "☕" : s.kind === "assign" ? "📍" : "💡"}</span>
-              <div className="flex-1 min-w-0">
-                <div className="text-sm font-bold">{s.title}</div>
-                <div className="text-xs text-slate-500">{s.detail}</div>
+        {team.aiEnabled ? (
+          <>
+            <div className="px-4 pt-3 pb-1 flex items-center justify-between bg-violet-50">
+              <h3 className="text-sm font-bold text-violet-800">✨ AI提案</h3>
+              <div className="flex gap-2 items-center pb-1">
+                <button onClick={runAI} disabled={ai.loading} className="text-xs font-bold text-violet-700 disabled:opacity-40">{ai.loading ? "分析中..." : "🔄 再分析"}</button>
+                <button onClick={() => setRoute("ai")} className="text-xs font-bold text-violet-700">すべて見る</button>
               </div>
-              {(s.kind === "break" || s.kind === "assign") && s.pid && (
-                <Btn color="violet" onClick={() => applySuggestion(s)} className="py-1.5 text-xs shrink-0">適用</Btn>
-              )}
             </div>
-          ))}
-        </div>
+            <div className="p-3 space-y-2">
+              {ai.loading && <p className="text-xs text-slate-400 px-1">AIが現場状況を分析しています...</p>}
+              {!ai.loading && (ai.list || []).slice(0, 3).map((s, i) => (
+                <div key={i} className="flex items-start gap-2 bg-slate-50 rounded-lg px-3 py-2">
+                  <span className="text-base mt-0.5">{s.kind === "break" ? "☕" : s.kind === "assign" ? "📍" : "💡"}</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-bold">{s.title}</div>
+                    <div className="text-xs text-slate-500">{s.detail}</div>
+                  </div>
+                  {(s.kind === "break" || s.kind === "assign") && s.pid && (
+                    <Btn color="violet" onClick={() => applySuggestion(s)} className="py-1.5 text-xs shrink-0">適用</Btn>
+                  )}
+                </div>
+              ))}
+            </div>
+          </>
+        ) : (
+          <div className="px-4 py-4 bg-violet-50 flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-bold text-violet-800">✨ AI提案は現在OFFです</h3>
+              <p className="text-xs text-violet-600 mt-0.5">休憩不足の解消などをAIが分析して提案します。</p>
+            </div>
+            <Btn color="violet" onClick={onToggleAi} className="shrink-0 py-2 text-xs">ONにする</Btn>
+          </div>
+        )}
       </Card>
 
       <div className="grid lg:grid-cols-2 gap-3">
@@ -801,37 +825,51 @@ function CommandCenter({ team, now, kpi, enriched, posSummary, state, setRoute, 
 }
 
 /* ================================ AI提案画面 ================================ */
-function AIScreen({ ai, runAI, applySuggestion }) {
+function AIScreen({ team, ai, runAI, applySuggestion, onToggleAi }) {
   return (
     <div className="space-y-3 max-w-md mx-auto">
       <div className="flex items-center justify-between px-1">
         <h2 className="font-bold text-lg">✨ AI提案</h2>
-        <Btn color="violet" onClick={runAI} disabled={ai.loading}>{ai.loading ? "分析中..." : "🔄 現場を再分析"}</Btn>
+        {team.aiEnabled && <Btn color="violet" onClick={runAI} disabled={ai.loading}>{ai.loading ? "分析中..." : "🔄 現場を再分析"}</Btn>}
       </div>
       <Card className="p-3 text-xs text-slate-500">
         現在の勤務・休憩・配置状況をAIが分析し、休憩不足の解消などを提案します。「適用」で配置(休憩予定含む)として登録され、監査ログに残ります。
       </Card>
-      {ai.note && <p className="text-xs text-violet-600 font-bold px-1">{ai.note}</p>}
-      {ai.loading && <Card className="p-6 text-center text-sm text-slate-400"><div className="text-2xl mb-2">🤖</div>AIが現場状況を分析しています...</Card>}
-      {!ai.loading && !ai.list && <Card className="p-6 text-center text-sm text-slate-400">「現場を再分析」を押すと提案が表示されます。</Card>}
-      {!ai.loading && (ai.list || []).map((s, i) => (
-        <Card key={i} className="p-4">
-          <div className="flex items-start gap-3">
-            <span className="text-2xl">{s.kind === "break" ? "☕" : s.kind === "assign" ? "📍" : "💡"}</span>
-            <div className="flex-1 min-w-0">
-              <div className="font-bold text-sm">{s.title}</div>
-              <div className="text-xs text-slate-500 mt-0.5">{s.detail}</div>
+      <Card className="p-4 flex items-center justify-between gap-3 border-violet-200 bg-violet-50">
+        <div>
+          <div className="text-sm font-bold text-violet-800">AI提案を{team.aiEnabled ? "ON" : "OFF"}にしています</div>
+          <div className="text-xs text-violet-600 mt-0.5">{team.aiEnabled ? "この現場ではAI提案が使えます。" : "OFFの間は分析を行わず、費用も発生しません。"}</div>
+        </div>
+        <Btn color={team.aiEnabled ? "slate" : "violet"} onClick={onToggleAi} className="shrink-0 py-2 text-xs">{team.aiEnabled ? "OFFにする" : "ONにする"}</Btn>
+      </Card>
+      {!team.aiEnabled && (
+        <Card className="p-6 text-center text-sm text-slate-400">AI提案はOFFになっています。上のボタンからONにすると使えます。</Card>
+      )}
+      {team.aiEnabled && (
+        <>
+          {ai.note && <p className="text-xs text-violet-600 font-bold px-1">{ai.note}</p>}
+          {ai.loading && <Card className="p-6 text-center text-sm text-slate-400"><div className="text-2xl mb-2">🤖</div>AIが現場状況を分析しています...</Card>}
+          {!ai.loading && !ai.list && <Card className="p-6 text-center text-sm text-slate-400">「現場を再分析」を押すと提案が表示されます。</Card>}
+          {!ai.loading && (ai.list || []).map((s, i) => (
+            <Card key={i} className="p-4">
+              <div className="flex items-start gap-3">
+                <span className="text-2xl">{s.kind === "break" ? "☕" : s.kind === "assign" ? "📍" : "💡"}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="font-bold text-sm">{s.title}</div>
+                  <div className="text-xs text-slate-500 mt-0.5">{s.detail}</div>
+                  {(s.kind === "break" || s.kind === "assign") && s.pid && (
+                    <div className="text-xs text-violet-700 font-bold mt-1 font-mono">{fmtHM(s.start)}〜{fmtHM(s.end)} {s.name || "休憩予定"}</div>
+                  )}
+                </div>
+              </div>
               {(s.kind === "break" || s.kind === "assign") && s.pid && (
-                <div className="text-xs text-violet-700 font-bold mt-1 font-mono">{fmtHM(s.start)}〜{fmtHM(s.end)} {s.name || "休憩予定"}</div>
+                <Btn color="violet" className="w-full mt-3" onClick={() => applySuggestion(s)}>この提案を配置に適用する</Btn>
               )}
-            </div>
-          </div>
-          {(s.kind === "break" || s.kind === "assign") && s.pid && (
-            <Btn color="violet" className="w-full mt-3" onClick={() => applySuggestion(s)}>この提案を配置に適用する</Btn>
-          )}
-        </Card>
-      ))}
-      <p className="text-slate-400 px-1" style={{ fontSize: 10 }}>※AI提案は参考情報です。最終判断は現場責任者が行ってください。</p>
+            </Card>
+          ))}
+          <p className="text-slate-400 px-1" style={{ fontSize: 10 }}>※AI提案は参考情報です。最終判断は現場責任者が行ってください。</p>
+        </>
+      )}
     </div>
   );
 }
@@ -971,11 +1009,18 @@ function MemberScreen({ p, now, team, setRoute, onBreakStart, onBreakEnd, onChec
 }
 
 /* ================================ 参加者一覧(詳細) ================================ */
-function Dashboard({ enriched, isOwner, votingClosed, setRoute, setModal, onCheckout, onToggleRole, onNotifyShorts, onCloseVoting, onDeleteTeam }) {
+function Dashboard({ team, enriched, isOwner, votingClosed, setRoute, setModal, onCheckout, onToggleRole, onToggleAi, onNotifyShorts, onCloseVoting, onDeleteTeam }) {
   const shorts = enriched.filter((p) => p.shortage);
   return (
     <div className="space-y-3">
       <h2 className="font-bold text-lg lg:text-xl px-1">参加者一覧(詳細)</h2>
+      <Card className="p-4 flex items-center justify-between gap-3">
+        <div>
+          <div className="text-sm font-bold text-slate-700">✨ AI提案</div>
+          <div className="text-xs text-slate-500 mt-0.5">現在 {team.aiEnabled ? "ON" : "OFF"} です。{!team.aiEnabled && "OFFの間は分析を行わず費用も発生しません。"}</div>
+        </div>
+        <Btn color={team.aiEnabled ? "slate" : "violet"} onClick={onToggleAi} className="shrink-0 py-2 text-xs">{team.aiEnabled ? "OFFにする" : "ONにする"}</Btn>
+      </Card>
       {shorts.length > 0 && (
         <Card className="p-3 border-rose-300 bg-rose-50">
           <div className="flex items-center justify-between">

@@ -50,6 +50,7 @@ export const api = {
 
   // チーム
   createTeam: (b) => call("POST", "/api/v1/teams", b, store.getSession()),
+  setAiEnabled: (id, enabled) => call("PATCH", `/api/v1/teams/${id}/ai-enabled`, { enabled }, teamToken(id)),
   myTeams: () => call("GET", "/api/v1/teams", null, store.getSession()),
   teamByCode: (code) => call("GET", `/api/v1/teams/by-code/${code}`),
   join: (code, b) => call("POST", `/api/v1/teams/${code}/join`, b, store.getSession()),
