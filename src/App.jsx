@@ -481,7 +481,7 @@ function TeamApp({ teamId, user, say, fail, toast, exitTeam, logout }) {
     setAi((a) => ({ ...a, loading: true }));
     try {
       const d = await api.aiSuggest(teamId);
-      setAi({ list: d.suggestions, loading: false, note: d.source === "ai" ? "AI(Claude)が現場状況を分析した提案です。" : "ルールベースの自動提案です(AIキー未設定または接続失敗)。" });
+      setAi({ list: d.suggestions, loading: false, note: d.source === "ai" ? "AI(Claude)が現場状況を分析した提案です。" : `ルールベースの自動提案です。${d.debug ? `(原因: ${d.debug})` : ""}` });
     } catch (e) { setAi({ list: [], loading: false, note: e.message }); }
   };
   const applySuggestion = (s) => run(
@@ -552,8 +552,8 @@ function TeamApp({ teamId, user, say, fail, toast, exitTeam, logout }) {
   return (
     <div className="min-h-screen bg-slate-100 text-slate-900" style={{ fontFamily: "'Hiragino Sans','Noto Sans JP',system-ui,sans-serif" }}>
       <header className="sticky top-0 z-40 bg-slate-900 text-white">
-        <div className="max-w-5xl mx-auto flex items-center gap-2 px-3 py-2.5">
-          <button onClick={() => setMenuOpen(true)} className="w-9 h-9 rounded-lg bg-slate-800 text-lg">☰</button>
+        <div className="max-w-7xl mx-auto flex items-center gap-2 px-3 lg:px-6 py-2.5 lg:py-3.5">
+          <button onClick={() => setMenuOpen(true)} className="lg:hidden w-9 h-9 rounded-lg bg-slate-800 text-lg">☰</button>
           <div className="flex-1 min-w-0">
             <div className="text-slate-400 leading-none" style={{ fontSize: 10 }}>現場運営支援システム</div>
             <div className="text-sm font-bold truncate">{team.siteName}</div>
@@ -565,24 +565,24 @@ function TeamApp({ teamId, user, say, fail, toast, exitTeam, logout }) {
         </div>
       </header>
 
-      <div className="max-w-5xl mx-auto flex">
-        <nav className="hidden lg:block w-56 shrink-0 py-4 pl-3">
-          <div className="bg-white rounded-xl border border-slate-200 p-2 sticky top-16">
-            <div className="px-3 py-2 mb-1 border-b border-slate-100">
-              <div className="text-sm font-bold">{dName(me)}</div>
+      <div className="max-w-7xl mx-auto flex">
+        <nav className="hidden lg:block w-64 shrink-0 py-4 pl-4">
+          <div className="bg-white rounded-xl border border-slate-200 p-2.5 sticky top-16">
+            <div className="px-3 py-2.5 mb-1 border-b border-slate-100">
+              <div className="text-base font-bold">{dName(me)}</div>
               <RoleTag r={state.me.role} />
             </div>
             {NAV.map((n) => (
               <button key={n.id} onClick={() => goto(n.id)}
-                className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-bold mb-0.5 ${route === n.id ? "bg-indigo-600 text-white" : "text-slate-600 hover:bg-slate-100"}`}>
-                <span className="w-5 text-center">{n.icon}</span>{n.label}
+                className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-bold mb-0.5 ${route === n.id ? "bg-indigo-600 text-white" : "text-slate-600 hover:bg-slate-100"}`}>
+                <span className="w-5 text-center text-base">{n.icon}</span>{n.label}
               </button>
             ))}
-            <button onClick={exitTeam} className="w-full px-3 py-2 rounded-lg text-sm font-bold text-slate-500 hover:bg-slate-100 text-left">↩ チーム一覧へ</button>
-            {user && <button onClick={logout} className="w-full px-3 py-2 rounded-lg text-sm font-bold text-rose-600 hover:bg-rose-50 text-left">ログアウト</button>}
+            <button onClick={exitTeam} className="w-full px-3 py-2.5 rounded-lg text-sm font-bold text-slate-500 hover:bg-slate-100 text-left">↩ チーム一覧へ</button>
+            {user && <button onClick={logout} className="w-full px-3 py-2.5 rounded-lg text-sm font-bold text-rose-600 hover:bg-rose-50 text-left">ログアウト</button>}
           </div>
         </nav>
-        <main className="flex-1 min-w-0 p-3 pb-24 lg:pb-6">{screens[route] || screens.member}</main>
+        <main className="flex-1 min-w-0 p-3 lg:p-6 pb-24 lg:pb-6">{screens[route] || screens.member}</main>
       </div>
 
       <nav className="lg:hidden fixed bottom-0 inset-x-0 z-40 bg-white border-t border-slate-200 flex" style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
@@ -665,8 +665,8 @@ function CommandCenter({ team, now, kpi, enriched, posSummary, state, setRoute, 
 
       <div className="grid grid-cols-5 gap-2">
         {[["勤務", kpi.working, "text-emerald-600"], ["休憩", kpi.breaking, "text-amber-600"], ["開始前", kpi.before, "text-sky-600"], ["退勤", kpi.done, "text-slate-500"], ["休憩不足", kpi.short, kpi.short ? "text-rose-600" : "text-slate-300"]].map(([k, v, c]) => (
-          <button key={k} onClick={() => setRoute("dash")} className="bg-white rounded-xl border border-slate-200 py-2.5 text-center active:scale-95 transition">
-            <div className={`text-2xl font-bold tabular-nums ${c}`}>{v}</div>
+          <button key={k} onClick={() => setRoute("dash")} className="bg-white rounded-xl border border-slate-200 py-2.5 lg:py-4 text-center active:scale-95 transition">
+            <div className={`text-2xl lg:text-3xl font-bold tabular-nums ${c}`}>{v}</div>
             <div className="font-bold text-slate-500" style={{ fontSize: 10 }}>{k}</div>
           </button>
         ))}
@@ -975,7 +975,7 @@ function Dashboard({ enriched, isOwner, votingClosed, setRoute, setModal, onChec
   const shorts = enriched.filter((p) => p.shortage);
   return (
     <div className="space-y-3">
-      <h2 className="font-bold text-lg px-1">参加者一覧(詳細)</h2>
+      <h2 className="font-bold text-lg lg:text-xl px-1">参加者一覧(詳細)</h2>
       {shorts.length > 0 && (
         <Card className="p-3 border-rose-300 bg-rose-50">
           <div className="flex items-center justify-between">
@@ -1148,7 +1148,7 @@ function Timeline({ enriched, now, team }) {
   const hours = Array.from({ length: 10 }, (_, i) => 6 + i * 2);
   return (
     <div className="space-y-3">
-      <h2 className="font-bold text-lg px-1">タイムライン</h2>
+      <h2 className="font-bold text-lg lg:text-xl px-1">タイムライン</h2>
       <div className="flex flex-wrap gap-3 px-1 text-xs font-bold text-slate-500">
         <span className="flex items-center gap-1"><span className="w-3 h-2 rounded bg-emerald-200 border border-emerald-400" />勤務予定</span>
         <span className="flex items-center gap-1"><span className="w-3 h-2 rounded bg-indigo-500" />配置</span>
@@ -1248,7 +1248,7 @@ function Vote({ me, enriched, voting, setRoute, onVote }) {
   };
   return (
     <div className="space-y-3 max-w-md mx-auto">
-      <h2 className="font-bold text-lg px-1">🗳 ポイント投票</h2>
+      <h2 className="font-bold text-lg lg:text-xl px-1">🗳 ポイント投票</h2>
       <Card className="p-3 text-xs text-slate-500">
         今日いちばん活躍したと思う人を<b>1人だけ</b>選んで投票してください(自分は選べません)。
         得票数の順位に応じてポイントを獲得できます:<b>1位3P / 2位2P / 3位1P</b>。
@@ -1288,7 +1288,7 @@ function VoteResult({ state, enriched, isAdmin, me, onCloseVoting }) {
   const top3 = results.filter((r) => r.todayRank <= 3 && r.todayVotes > 0).slice(0, 3);
   return (
     <div className="space-y-3 max-w-md mx-auto">
-      <h2 className="font-bold text-lg px-1">🏆 ポイント結果</h2>
+      <h2 className="font-bold text-lg lg:text-xl px-1">🏆 ポイント結果</h2>
       <div className="grid grid-cols-3 gap-2">
         {top3.map((p) => (
           <Card key={p.id} className={`p-3 text-center ${p.todayRank === 1 ? "border-amber-300 bg-amber-50" : ""}`}>
@@ -1394,7 +1394,7 @@ function MyPage({ p, team, hasAccount, onSetBadge }) {
   const nextMilestone = (Math.floor(total / 10) + 1) * 10;
   return (
     <div className="space-y-3 max-w-md mx-auto">
-      <h2 className="font-bold text-lg px-1">マイページ</h2>
+      <h2 className="font-bold text-lg lg:text-xl px-1">マイページ</h2>
       <Card className="p-4 flex items-center gap-3">
         <span className="w-12 h-12 rounded-full bg-indigo-600 text-white text-lg font-bold flex items-center justify-center">{p.name[0]}</span>
         <div>
@@ -1518,7 +1518,7 @@ function NotifyScreen({ state, isAdmin, onSend, onReadAll, onRead }) {
 function Audit({ logs }) {
   return (
     <div className="space-y-3">
-      <h2 className="font-bold text-lg px-1">監査ログ</h2>
+      <h2 className="font-bold text-lg lg:text-xl px-1">監査ログ</h2>
       <Card className="p-3 text-xs text-slate-500">管理者による修正・配置変更・権限変更・チーム削除・投票締切を記録します。<b>監査ログは削除できません。</b></Card>
       {logs === null && <Card className="p-6 text-center text-sm text-slate-400">読み込み中...</Card>}
       {logs && logs.length === 0 && <Card className="p-6 text-center text-sm text-slate-400">まだ記録がありません。</Card>}

@@ -546,7 +546,7 @@ app.post("/api/v1/teams/:id/ai-suggest", async (c) => {
   });
   const state = { currentTime: fmtHM(t), currentTimeMs: t, members };
 
-  let suggestions = null, source = "rule";
+  let suggestions = null, source = "rule", debug = "";
   if (c.env.ANTHROPIC_API_KEY) {
     try {
       const res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -565,13 +565,29 @@ app.post("/api/v1/teams/:id/ai-suggest", async (c) => {
           }],
         }),
       });
+      if (!res.ok) {
+        const errText = await res.text();
+        debug = `HTTP ${res.status}: ${errText.slice(0, 300)}`;
+        console.error("ai-suggest: API error", debug);
+        throw new Error(debug);
+      }
       const data = await res.json();
       const text = (data.content || []).filter((x) => x.type === "text").map((x) => x.text).join("\n");
-      suggestions = JSON.parse(text.replace(/```json|```/g, "").trim());
+      try {
+        suggestions = JSON.parse(text.replace(/```json|```/g, "").trim());
+      } catch (parseErr) {
+        debug = `JSON解析失敗: ${text.slice(0, 300)}`;
+        console.error("ai-suggest: parse error", debug);
+        throw parseErr;
+      }
       source = "ai";
     } catch (e) {
+      if (!debug) debug = `fetch失敗: ${e.message || e}`;
+      console.error("ai-suggest: fallback to rule-based:", debug);
       suggestions = null;
     }
+  } else {
+    debug = "ANTHROPIC_API_KEY が未設定です";
   }
   if (!suggestions) suggestions = ruleSuggestions(state);
   // 適用用パラメータを付与
@@ -582,7 +598,7 @@ app.post("/api/v1/teams/:id/ai-suggest", async (c) => {
     if (s.kind === "assign" && p) return { ...s, pid: p.id, start: t, end: t + 120 * 60000 };
     return s;
   });
-  return ok(c, { suggestions: mapped, source });
+  return ok(c, { suggestions: mapped, source, debug });
 });
 
 /* ================================ フォールバック ================================ */
