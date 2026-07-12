@@ -22,6 +22,7 @@ const dateT = (dateStr, hhmm) => new Date(`${dateStr}T${hhmm}:00+09:00`).getTime
 
 const ROLE_LABEL = { owner: "オーナー", admin: "管理者", member: "メンバー", guest: "ゲスト" };
 const POINT_DAY_PASS_COST = 150;
+const MONTHLY_FREE_CREDITS = 50; // 決済準備中の措置: 毎月全アカウントに自動付与されるクレジット数(表示用。実際の付与はサーバー側で判定)
 const BADGE_INFO = {
   "🏆": "MVP(現場1位)",
   "💎": "累計10P到達",
@@ -270,11 +271,21 @@ function TeamsScreen({ user, say, fail, openTeam, onJoinByCode, logout, onOpenMy
   );
   return (
     <Shell title="チーム一覧" right={
-      <div className="flex items-center gap-1">
-        {user?.isSiteAdmin && <button onClick={onOpenAdmin} className="text-xs font-bold text-amber-200 bg-slate-800 px-2.5 py-1.5 rounded-lg">🛠 管理</button>}
-        <button onClick={onOpenBilling} className="text-xs font-bold text-violet-200 bg-slate-800 px-2.5 py-1.5 rounded-lg">💳 プラン</button>
-        <button onClick={onOpenMyPage} className="text-xs font-bold text-slate-200 bg-slate-800 px-2.5 py-1.5 rounded-lg">🪪 マイページ</button>
-        <button onClick={logout} className="text-xs font-bold text-rose-400 px-2 py-1.5">ログアウト</button>
+      <div className="flex items-center gap-1 shrink-0">
+        {user?.isSiteAdmin && (
+          <button onClick={onOpenAdmin} className="text-xs font-bold text-amber-200 bg-slate-800 px-2 sm:px-2.5 py-1.5 rounded-lg" title="管理ページ">
+            🛠<span className="hidden sm:inline"> 管理</span>
+          </button>
+        )}
+        <button onClick={onOpenBilling} className="text-xs font-bold text-violet-200 bg-slate-800 px-2 sm:px-2.5 py-1.5 rounded-lg" title="プラン・課金">
+          💳<span className="hidden sm:inline"> プラン</span>
+        </button>
+        <button onClick={onOpenMyPage} className="text-xs font-bold text-slate-200 bg-slate-800 px-2 sm:px-2.5 py-1.5 rounded-lg" title="マイページ">
+          🪪<span className="hidden sm:inline"> マイページ</span>
+        </button>
+        <button onClick={logout} className="text-xs font-bold text-rose-400 px-1.5 sm:px-2 py-1.5" title="ログアウト">
+          <span className="sm:hidden">↩</span><span className="hidden sm:inline">ログアウト</span>
+        </button>
       </div>
     }>
       <div className="space-y-3">
@@ -313,8 +324,8 @@ const Shell = ({ title, children, onBack, right }) => (
   <div className="min-h-screen bg-slate-100" style={{ fontFamily: "'Hiragino Sans','Noto Sans JP',system-ui,sans-serif" }}>
     <header className="sticky top-0 z-40 bg-slate-900 text-white">
       <div className="max-w-lg mx-auto flex items-center gap-2 px-3 py-3">
-        {onBack && <button onClick={onBack} className="w-9 h-9 rounded-lg bg-slate-800 font-bold">←</button>}
-        <div className="flex-1 font-bold">{title}</div>
+        {onBack && <button onClick={onBack} className="w-9 h-9 rounded-lg bg-slate-800 font-bold shrink-0">←</button>}
+        <div className="flex-1 min-w-0 font-bold truncate">{title}</div>
         {right}
       </div>
     </header>
@@ -1522,24 +1533,25 @@ function BillingScreen({ say, fail, onBack }) {
   const [codeInput, setCodeInput] = useState("");
   const load = () => {
     setLoadErr("");
-    api.getBilling().then(setBilling).catch((e) => setLoadErr(e.message || "読み込みに失敗しました。"));
+    api.getBilling().then(setBilling).catch(() => setLoadErr("決済は現在準備中です。"));
   };
   useEffect(() => { load(); }, []);
 
+  const failPayment = () => say("決済は現在準備中です。しばらくお待ちください。");
   const subscribe = async () => {
     setBusy("sub");
     try { const d = await api.billingCheckout({ type: "subscription" }); location.href = d.url; }
-    catch (e) { fail(e); setBusy(""); }
+    catch (e) { failPayment(e); setBusy(""); }
   };
   const buyCredits = async (bundle) => {
     setBusy(bundle);
     try { const d = await api.billingCheckout({ type: "credits", bundle }); location.href = d.url; }
-    catch (e) { fail(e); setBusy(""); }
+    catch (e) { failPayment(e); setBusy(""); }
   };
   const openPortal = async () => {
     setBusy("portal");
     try { const d = await api.billingPortal(); location.href = d.url; }
-    catch (e) { fail(e); setBusy(""); }
+    catch (e) { failPayment(e); setBusy(""); }
   };
   const redeem = async () => {
     if (!codeInput.trim()) return;
@@ -1604,6 +1616,9 @@ function BillingScreen({ say, fail, onBack }) {
                   {busy === "portal" ? "処理中..." : "契約内容を管理・解約する"}
                 </Btn>
               )}
+              <p className="text-xs text-emerald-600 font-bold mt-2 bg-emerald-50 rounded-lg px-2.5 py-2">
+                🎁 決済準備中につき、毎月クレジット{MONTHLY_FREE_CREDITS}回分を無料で自動付与しています(月初めに反映)。
+              </p>
             </Card>
 
             {isSubscribed && billing.teamQuota && (
@@ -1623,35 +1638,48 @@ function BillingScreen({ say, fail, onBack }) {
               </Card>
             )}
 
-            <Card className="p-4">
-              <div className="text-sm font-bold text-slate-700 mb-1">✨ 月額プラン</div>
-              <div className="text-2xl font-bold">¥980<span className="text-sm font-normal text-slate-400">/月</span></div>
-              <p className="text-xs text-slate-500 mt-1">チーム作成が1日1件・月15件まで無料になり、AI提案も使い放題になります。枠を超えた分はクレジットを消費します。いつでも解約できます。</p>
-              {!isSubscribed && (
-                <Btn className="w-full mt-3" onClick={subscribe} disabled={!!busy}>{busy === "sub" ? "処理中..." : "月額プランを契約する(クレジットカード)"}</Btn>
-              )}
-            </Card>
+            {billing.paymentsReady ? (
+              <>
+                <Card className="p-4">
+                  <div className="text-sm font-bold text-slate-700 mb-1">✨ 月額プラン</div>
+                  <div className="text-2xl font-bold">¥980<span className="text-sm font-normal text-slate-400">/月</span></div>
+                  <p className="text-xs text-slate-500 mt-1">チーム作成が1日1件・月15件まで無料になり、AI提案も使い放題になります。枠を超えた分はクレジットを消費します。いつでも解約できます。</p>
+                  {!isSubscribed && (
+                    <Btn className="w-full mt-3" onClick={subscribe} disabled={!!busy}>{busy === "sub" ? "処理中..." : "月額プランを契約する(クレジットカード)"}</Btn>
+                  )}
+                </Card>
 
-            <Card className="p-4">
-              <div className="text-sm font-bold text-slate-700 mb-2">☕ クレジット(都度払い)</div>
-              <p className="text-xs text-slate-500 mb-3">AI提案1回、または無料枠を超えたチーム作成1件につき1クレジット消費します。有効期限はありません。クレジットカードのほかPayPayもご利用いただけます。</p>
-              <div className="space-y-2">
-                {BUNDLES.map((b) => (
-                  <div key={b.key} className="flex items-center justify-between border border-slate-200 rounded-lg px-3 py-2.5">
-                    <div>
-                      <div className="text-sm font-bold">{b.label}</div>
-                      <div className="text-xs text-slate-400">{b.note}</div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="font-bold">{b.price}</span>
-                      <Btn color="slate" onClick={() => buyCredits(b.key)} disabled={!!busy} className="py-1.5 text-xs">
-                        {busy === b.key ? "処理中..." : "購入"}
-                      </Btn>
-                    </div>
+                <Card className="p-4">
+                  <div className="text-sm font-bold text-slate-700 mb-2">☕ クレジット(都度払い)</div>
+                  <p className="text-xs text-slate-500 mb-3">AI提案1回、または無料枠を超えたチーム作成1件につき1クレジット消費します。有効期限はありません。クレジットカードのほかPayPayもご利用いただけます。</p>
+                  <div className="space-y-2">
+                    {BUNDLES.map((b) => (
+                      <div key={b.key} className="flex items-center justify-between border border-slate-200 rounded-lg px-3 py-2.5">
+                        <div>
+                          <div className="text-sm font-bold">{b.label}</div>
+                          <div className="text-xs text-slate-400">{b.note}</div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold">{b.price}</span>
+                          <Btn color="slate" onClick={() => buyCredits(b.key)} disabled={!!busy} className="py-1.5 text-xs">
+                            {busy === b.key ? "処理中..." : "購入"}
+                          </Btn>
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-            </Card>
+                </Card>
+              </>
+            ) : (
+              <Card className="p-5 text-center bg-slate-50 border-slate-200">
+                <div className="text-2xl mb-1">🚧</div>
+                <div className="text-sm font-bold text-slate-700">決済機能は現在準備中です</div>
+                <p className="text-xs text-slate-500 mt-1">
+                  クレジットカード・PayPayでの月額プラン(¥980/月)やクレジット購入は、今後実装予定です。<br />
+                  それまでの間は、上記の「毎月無料付与クレジット」「ポイント交換」「招待コード」でご利用いただけます。
+                </p>
+              </Card>
+            )}
 
             <Card className="p-4">
               <div className="text-sm font-bold text-slate-700 mb-2">☕ ポイントで交換</div>
@@ -1686,7 +1714,7 @@ function AdminScreen({ say, fail, onBack }) {
   const [codes, setCodes] = useState(null);
   const [users, setUsers] = useState(null);
   const [busy, setBusy] = useState(false);
-  const [form, setForm] = useState({ note: "", maxUses: "", expiresInDays: "" });
+  const [form, setForm] = useState({ kind: "friend_unlimited", note: "", maxUses: "", expiresInDays: "", creditAmount: "" });
 
   const loadOverview = () => api.adminOverview().then(setOverview).catch(fail);
   const loadCodes = () => api.adminCodes().then((d) => setCodes(d.codes)).catch(fail);
@@ -1702,12 +1730,14 @@ function AdminScreen({ say, fail, onBack }) {
     setBusy(true);
     try {
       const d = await api.adminCreateCode({
+        kind: form.kind || "friend_unlimited",
         note: form.note,
         maxUses: form.maxUses ? parseInt(form.maxUses, 10) : null,
         expiresInDays: form.expiresInDays ? parseInt(form.expiresInDays, 10) : null,
+        creditAmount: form.creditAmount ? parseInt(form.creditAmount, 10) : null,
       });
       say(`コードを発行しました: ${d.code}`);
-      setForm({ note: "", maxUses: "", expiresInDays: "" });
+      setForm({ kind: form.kind, note: "", maxUses: "", expiresInDays: "", creditAmount: "" });
       loadCodes();
     } catch (e) { fail(e); }
     setBusy(false);
@@ -1755,12 +1785,12 @@ function AdminScreen({ say, fail, onBack }) {
                   <div className="divide-y divide-slate-100">
                     {overview.recentLedger.length === 0 && <p className="text-xs text-slate-400 px-4 py-3">まだ入金記録がありません。</p>}
                     {overview.recentLedger.map((l) => (
-                      <div key={l.id} className="px-4 py-2.5 flex items-center justify-between text-sm">
-                        <div>
-                          <div className="font-bold">{l.detail}</div>
-                          <div className="text-xs text-slate-400 font-mono">{new Date(l.time).toLocaleString("ja-JP")}</div>
+                      <div key={l.id} className="px-4 py-2.5 flex items-center justify-between gap-2 text-sm">
+                        <div className="min-w-0">
+                          <div className="font-bold truncate">{l.detail}</div>
+                          <div className="text-xs text-slate-400 font-mono truncate">{new Date(l.time).toLocaleString("ja-JP")}</div>
                         </div>
-                        <div className="font-bold text-emerald-700">¥{l.amountYen.toLocaleString()}</div>
+                        <div className="font-bold text-emerald-700 shrink-0 whitespace-nowrap">¥{l.amountYen.toLocaleString()}</div>
                       </div>
                     ))}
                   </div>
@@ -1773,14 +1803,26 @@ function AdminScreen({ say, fail, onBack }) {
         {tab === "codes" && (
           <>
             <Card className="p-4 space-y-2">
-              <div className="text-sm font-bold text-slate-700">友人・知人向け招待コードを発行</div>
-              <p className="text-xs text-slate-500">このコードを使った人は、AI提案が無期限で使い放題になります。何人でも同じコードを使えます(1人1回まで)。</p>
+              <div className="text-sm font-bold text-slate-700">招待コードを発行</div>
+              <div className="flex gap-1 bg-slate-100 rounded-lg p-1">
+                {[["friend_unlimited", "友人向け無制限"], ["credit_grant", "クレジット付与"]].map(([k, l]) => (
+                  <button key={k} onClick={() => setForm({ ...form, kind: k })} className={`flex-1 py-2 rounded-md text-xs font-bold leading-tight ${(form.kind || "friend_unlimited") === k ? "bg-white shadow text-indigo-700" : "text-slate-500"}`}>{l}</button>
+                ))}
+              </div>
+              <p className="text-xs text-slate-500">
+                {(form.kind || "friend_unlimited") === "friend_unlimited"
+                  ? "このコードを使った人は、AI提案・チーム作成が無期限で使い放題になります。何人でも同じコードを使えます(1人1回まで)。"
+                  : "このコードを使った人に、指定した回数分のクレジットを付与します。何人でも同じコードを使えます(1人1回まで)。"}
+              </p>
+              {form.kind === "credit_grant" && (
+                <Field label="付与するクレジット数 *"><input type="number" className={inputCls} value={form.creditAmount} onChange={(e) => setForm({ ...form, creditAmount: e.target.value })} placeholder="例:50" /></Field>
+              )}
               <Field label="メモ(任意)"><input className={inputCls} value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} placeholder="例:社内メンバー用" /></Field>
               <div className="grid grid-cols-2 gap-2">
                 <Field label="利用可能人数(空欄=無制限)"><input type="number" className={inputCls} value={form.maxUses} onChange={(e) => setForm({ ...form, maxUses: e.target.value })} placeholder="例:10" /></Field>
                 <Field label="有効期限・日数(空欄=無期限)"><input type="number" className={inputCls} value={form.expiresInDays} onChange={(e) => setForm({ ...form, expiresInDays: e.target.value })} placeholder="例:30" /></Field>
               </div>
-              <Btn className="w-full" onClick={createCode} disabled={busy}>{busy ? "発行中..." : "コードを発行する"}</Btn>
+              <Btn className="w-full" onClick={createCode} disabled={busy || (form.kind === "credit_grant" && !form.creditAmount)}>{busy ? "発行中..." : "コードを発行する"}</Btn>
             </Card>
             {!codes && <Card className="p-6 text-center text-sm text-slate-400">読み込み中...</Card>}
             {codes && codes.length === 0 && <Card className="p-6 text-center text-sm text-slate-400">まだ発行したコードがありません。</Card>}
@@ -1789,11 +1831,13 @@ function AdminScreen({ say, fail, onBack }) {
                 <div className="flex items-center justify-between gap-2">
                   <div className="min-w-0">
                     <div className="font-mono font-bold text-sm truncate">{c.code}</div>
-                    <div className="text-xs text-slate-400">{c.note || "(メモなし)"}</div>
+                    <div className="text-xs text-slate-400 truncate">
+                      {c.kind === "credit_grant" ? `クレジット${c.creditAmount}回分付与` : "友人向け無制限"} / {c.note || "(メモなし)"}
+                    </div>
                   </div>
                   <span className={`text-xs font-bold px-2 py-1 rounded-full shrink-0 ${c.active ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>{c.active ? "有効" : "無効"}</span>
                 </div>
-                <div className="text-xs text-slate-500 mt-1.5">
+                <div className="text-xs text-slate-500 mt-1.5 break-words">
                   利用回数:{c.usedCount}{c.maxUses ? ` / ${c.maxUses}` : "(無制限)"}
                   {c.expiresAt && ` / 期限:${new Date(c.expiresAt).toLocaleDateString("ja-JP")}`}
                 </div>
