@@ -15,6 +15,7 @@ database_name = "genba-mvp"
 database_id = "8e00cc85-fdd8-46dc-a421-98aa8cc5004d"
 
 [vars]
+FREE_MODE = "true"
 STRIPE_PRICE_SUBSCRIPTION = ""
 STRIPE_PRICE_CREDITS_10 = ""
 STRIPE_PRICE_CREDITS_50 = ""
