@@ -52,6 +52,15 @@ export const api = {
   getBilling: () => call("GET", "/api/v1/billing", null, store.getSession()),
   billingCheckout: (b) => call("POST", "/api/v1/billing/checkout", b, store.getSession()),
   billingPortal: () => call("POST", "/api/v1/billing/portal", {}, store.getSession()),
+  redeemCode: (code) => call("POST", "/api/v1/redeem", { code }, store.getSession()),
+  exchangePoints: () => call("POST", "/api/v1/points/exchange", {}, store.getSession()),
+
+  // サイト管理者専用
+  adminOverview: () => call("GET", "/api/v1/admin/overview", null, store.getSession()),
+  adminCodes: () => call("GET", "/api/v1/admin/codes", null, store.getSession()),
+  adminCreateCode: (b) => call("POST", "/api/v1/admin/codes", b, store.getSession()),
+  adminSetCodeActive: (code, active) => call("PATCH", `/api/v1/admin/codes/${code}`, { active }, store.getSession()),
+  adminUsers: () => call("GET", "/api/v1/admin/users", null, store.getSession()),
 
   // チーム
   createTeam: (b) => call("POST", "/api/v1/teams", b, store.getSession()),

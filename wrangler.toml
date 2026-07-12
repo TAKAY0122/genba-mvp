@@ -14,6 +14,13 @@ binding = "DB"
 database_name = "genba-mvp"
 database_id = "8e00cc85-fdd8-46dc-a421-98aa8cc5004d"
 
+[vars]
+STRIPE_PRICE_SUBSCRIPTION = ""
+STRIPE_PRICE_CREDITS_10 = ""
+STRIPE_PRICE_CREDITS_50 = ""
+STRIPE_PRICE_CREDITS_100 = ""
+SITE_ADMIN_EMAILS = "ytaka122@ezweb.ne.jp"
+
 # AI提案を使う場合(任意):
 #   npx wrangler secret put ANTHROPIC_API_KEY
 # 未設定の場合はルールベース提案に自動フォールバックします

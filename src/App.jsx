@@ -21,6 +21,7 @@ const requiredBreak = (planMin) => (planMin >= 480 ? 60 : planMin >= 360 ? 45 : 
 const dateT = (dateStr, hhmm) => new Date(`${dateStr}T${hhmm}:00+09:00`).getTime();
 
 const ROLE_LABEL = { owner: "オーナー", admin: "管理者", member: "メンバー", guest: "ゲスト" };
+const POINT_DAY_PASS_COST = 150;
 const BADGE_INFO = {
   "🏆": "MVP(現場1位)",
   "💎": "累計10P到達",
@@ -150,7 +151,7 @@ export default function App() {
       if (store.getSession()) {
         try {
           const d = await api.me();
-          setUser(d.user);
+          setUser({ ...d.user, isSiteAdmin: d.isSiteAdmin });
           if (billingResult === "success") {
             say("お支払いありがとうございます。反映まで数秒かかる場合があります。");
             setPhase("billing");
@@ -180,7 +181,8 @@ export default function App() {
     onBack={() => setPhase(user ? "teams" : "login")} />;
   if (phase === "teams") return <TeamsScreen user={user} say={say} fail={fail} openTeam={openTeam}
     onJoinByCode={(code) => { setJoinCode(code); setPhase("join"); }} logout={logout}
-    onOpenMyPage={() => setPhase("mypage")} onOpenBilling={() => setPhase("billing")} />;
+    onOpenMyPage={() => setPhase("mypage")} onOpenBilling={() => setPhase("billing")} onOpenAdmin={() => setPhase("admin")} />;
+  if (phase === "admin") return <AdminScreen say={say} fail={fail} onBack={() => setPhase("teams")} />;
   if (phase === "mypage") return <GlobalMyPageScreen user={user} say={say} fail={fail} onBack={() => setPhase("teams")} />;
   if (phase === "billing") return <BillingScreen say={say} fail={fail} onBack={() => setPhase("teams")} />;
   return <TeamApp teamId={teamId} user={user} say={say} fail={fail} toast={toast}
@@ -204,7 +206,7 @@ function AuthScreen({ say, fail, onLoggedIn, onGuestCode }) {
       const d = tab === "login" ? await api.login(f) : await api.register(f);
       store.setSession(d.token);
       say(tab === "login" ? "ログインしました" : "アカウントを作成しました");
-      onLoggedIn(d.user);
+      onLoggedIn({ ...d.user, isSiteAdmin: d.isSiteAdmin });
     } catch (e) { fail(e); }
     setBusy(false);
   };
@@ -249,7 +251,7 @@ function AuthScreen({ say, fail, onLoggedIn, onGuestCode }) {
 }
 
 /* ================================ チーム一覧 / 作成 ================================ */
-function TeamsScreen({ user, say, fail, openTeam, onJoinByCode, logout, onOpenMyPage, onOpenBilling }) {
+function TeamsScreen({ user, say, fail, openTeam, onJoinByCode, logout, onOpenMyPage, onOpenBilling, onOpenAdmin }) {
   const [teams, setTeams] = useState(null);
   const [view, setView] = useState("list"); // list / create / share
   const [created, setCreated] = useState(null);
@@ -269,6 +271,7 @@ function TeamsScreen({ user, say, fail, openTeam, onJoinByCode, logout, onOpenMy
   return (
     <Shell title="チーム一覧" right={
       <div className="flex items-center gap-1">
+        {user?.isSiteAdmin && <button onClick={onOpenAdmin} className="text-xs font-bold text-amber-200 bg-slate-800 px-2.5 py-1.5 rounded-lg">🛠 管理</button>}
         <button onClick={onOpenBilling} className="text-xs font-bold text-violet-200 bg-slate-800 px-2.5 py-1.5 rounded-lg">💳 プラン</button>
         <button onClick={onOpenMyPage} className="text-xs font-bold text-slate-200 bg-slate-800 px-2.5 py-1.5 rounded-lg">🪪 マイページ</button>
         <button onClick={logout} className="text-xs font-bold text-rose-400 px-2 py-1.5">ログアウト</button>
@@ -325,9 +328,9 @@ function CreateTeamForm({ fail, onOpenBilling, onCreated }) {
   const [busy, setBusy] = useState(false);
   const [billing, setBilling] = useState(null);
   useEffect(() => { api.getBilling().then(setBilling).catch(() => {}); }, []);
-  const canUseAi = billing && ((billing.planType === "subscription" && billing.subscriptionActive) || (billing.planType === "credits" && billing.creditBalance > 0));
+  const canUseAi = billing?.freeMode || (billing && ((billing.planType === "subscription" && billing.subscriptionActive) || (billing.planType === "credits" && billing.creditBalance > 0)));
   const quota = billing?.teamQuota;
-  const canCreateFree = !!quota?.freeAvailable;
+  const canCreateFree = billing?.freeMode || !!quota?.freeAvailable;
   const canCreateWithCredit = !canCreateFree && (billing?.creditBalance || 0) > 0;
   const canCreate = billing === null || canCreateFree || canCreateWithCredit;
   const ok = f.siteName && f.venueName && f.date && canCreate;
@@ -1514,8 +1517,13 @@ function GlobalMyPageScreen({ user, say, fail, onBack }) {
 /* ================================ プラン・課金 ================================ */
 function BillingScreen({ say, fail, onBack }) {
   const [billing, setBilling] = useState(null);
+  const [loadErr, setLoadErr] = useState("");
   const [busy, setBusy] = useState("");
-  const load = () => api.getBilling().then(setBilling).catch(fail);
+  const [codeInput, setCodeInput] = useState("");
+  const load = () => {
+    setLoadErr("");
+    api.getBilling().then(setBilling).catch((e) => setLoadErr(e.message || "読み込みに失敗しました。"));
+  };
   useEffect(() => { load(); }, []);
 
   const subscribe = async () => {
@@ -1533,8 +1541,23 @@ function BillingScreen({ say, fail, onBack }) {
     try { const d = await api.billingPortal(); location.href = d.url; }
     catch (e) { fail(e); setBusy(""); }
   };
+  const redeem = async () => {
+    if (!codeInput.trim()) return;
+    setBusy("redeem");
+    try { await api.redeemCode(codeInput.trim()); say("コードを利用しました。AI提案が使い放題になります!"); setCodeInput(""); load(); }
+    catch (e) { fail(e); }
+    setBusy("");
+  };
+  const exchangePoints = async () => {
+    if (!confirm(`${POINT_DAY_PASS_COST}Pを消費して、AI提案が1日使い放題になるパスと交換しますか?`)) return;
+    setBusy("exchange");
+    try { await api.exchangePoints(); say("ポイントを交換しました。24時間、AI提案が使い放題です。"); load(); }
+    catch (e) { fail(e); }
+    setBusy("");
+  };
 
   const isSubscribed = billing?.planType === "subscription" && billing?.subscriptionActive;
+  const hasSpecialAccess = billing?.compUnlimited || billing?.dayPassActive;
   const BUNDLES = [
     { key: "10", label: "10回分", price: "¥300", note: "お試しに" },
     { key: "50", label: "50回分", price: "¥1,200", note: "1回あたり¥24" },
@@ -1544,9 +1567,33 @@ function BillingScreen({ say, fail, onBack }) {
   return (
     <Shell title="プラン・課金" onBack={onBack}>
       <div className="space-y-3">
-        {billing === null && <Card className="p-6 text-center text-sm text-slate-400">読み込み中...</Card>}
+        {billing === null && !loadErr && <Card className="p-6 text-center text-sm text-slate-400">読み込み中...</Card>}
+        {billing?.freeMode && (
+          <Card className="p-4 border-emerald-300 bg-emerald-50">
+            <div className="text-sm font-bold text-emerald-800">🎉 現在、チーム作成・AI提案ともに無料でご利用いただけます</div>
+            <p className="text-xs text-emerald-600 mt-0.5">決済の準備が整い次第、通常のプランに移行する予定です。今は何も購入する必要はありません。</p>
+          </Card>
+        )}
+        {loadErr && (
+          <Card className="p-6 text-center space-y-3">
+            <p className="text-sm text-rose-600 font-bold">{loadErr}</p>
+            <Btn className="w-full" onClick={load}>もう一度読み込む</Btn>
+          </Card>
+        )}
         {billing && (
           <>
+            {billing.compUnlimited && (
+              <Card className="p-4 border-emerald-300 bg-emerald-50">
+                <div className="text-sm font-bold text-emerald-800">🎁 招待コードにより、AI提案が無期限で使い放題です</div>
+              </Card>
+            )}
+            {!billing.compUnlimited && billing.dayPassActive && (
+              <Card className="p-4 border-emerald-300 bg-emerald-50">
+                <div className="text-sm font-bold text-emerald-800">☕ ポイント交換の1日パス利用中</div>
+                <div className="text-xs text-emerald-600 mt-0.5">{fmtHM(billing.dayPassExpiresAt)} まで有効(本日中)</div>
+              </Card>
+            )}
+
             <Card className="p-4">
               <div className="text-xs font-bold text-slate-400">現在のプラン</div>
               <div className="text-lg font-bold mt-0.5">
@@ -1581,13 +1628,13 @@ function BillingScreen({ say, fail, onBack }) {
               <div className="text-2xl font-bold">¥980<span className="text-sm font-normal text-slate-400">/月</span></div>
               <p className="text-xs text-slate-500 mt-1">チーム作成が1日1件・月15件まで無料になり、AI提案も使い放題になります。枠を超えた分はクレジットを消費します。いつでも解約できます。</p>
               {!isSubscribed && (
-                <Btn className="w-full mt-3" onClick={subscribe} disabled={!!busy}>{busy === "sub" ? "処理中..." : "月額プランを契約する"}</Btn>
+                <Btn className="w-full mt-3" onClick={subscribe} disabled={!!busy}>{busy === "sub" ? "処理中..." : "月額プランを契約する(クレジットカード)"}</Btn>
               )}
             </Card>
 
             <Card className="p-4">
               <div className="text-sm font-bold text-slate-700 mb-2">☕ クレジット(都度払い)</div>
-              <p className="text-xs text-slate-500 mb-3">AI提案1回、または無料枠を超えたチーム作成1件につき1クレジット消費します。有効期限はありません。</p>
+              <p className="text-xs text-slate-500 mb-3">AI提案1回、または無料枠を超えたチーム作成1件につき1クレジット消費します。有効期限はありません。クレジットカードのほかPayPayもご利用いただけます。</p>
               <div className="space-y-2">
                 {BUNDLES.map((b) => (
                   <div key={b.key} className="flex items-center justify-between border border-slate-200 rounded-lg px-3 py-2.5">
@@ -1606,7 +1653,192 @@ function BillingScreen({ say, fail, onBack }) {
               </div>
             </Card>
 
+            <Card className="p-4">
+              <div className="text-sm font-bold text-slate-700 mb-2">☕ ポイントで交換</div>
+              <p className="text-xs text-slate-500 mb-3">
+                投票で貯まった累計ポイント(現在 <b>{billing.totalPoints}P</b>)を使って、AI提案1日使い放題パスと交換できます。1回の交換で{POINT_DAY_PASS_COST}P消費し、再利用はできません。
+              </p>
+              <Btn color="amber" className="w-full" onClick={exchangePoints} disabled={!!busy || billing.totalPoints < POINT_DAY_PASS_COST}>
+                {busy === "exchange" ? "処理中..." : `${POINT_DAY_PASS_COST}Pを消費して1日パスと交換`}
+              </Btn>
+            </Card>
+
+            <Card className="p-4">
+              <div className="text-sm font-bold text-slate-700 mb-2">🎟 招待コードをお持ちの方</div>
+              <div className="flex gap-2">
+                <input className={inputCls} value={codeInput} onChange={(e) => setCodeInput(e.target.value)} placeholder="例:FRIEND-XXXXXXXX" />
+                <Btn onClick={redeem} disabled={!codeInput.trim() || !!busy} className="shrink-0 py-2.5 text-sm">{busy === "redeem" ? "確認中..." : "利用する"}</Btn>
+              </div>
+            </Card>
+
             <p className="text-xs text-slate-400 px-1">お支払いはStripeを通じて安全に処理されます。領収書はStripeから自動送付されます。AI提案の実際のAPI原価は1回あたり1円未満です。</p>
+          </>
+        )}
+      </div>
+    </Shell>
+  );
+}
+
+/* ================================ 管理ページ(作成者専用) ================================ */
+function AdminScreen({ say, fail, onBack }) {
+  const [tab, setTab] = useState("overview"); // overview / codes / users
+  const [overview, setOverview] = useState(null);
+  const [codes, setCodes] = useState(null);
+  const [users, setUsers] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [form, setForm] = useState({ note: "", maxUses: "", expiresInDays: "" });
+
+  const loadOverview = () => api.adminOverview().then(setOverview).catch(fail);
+  const loadCodes = () => api.adminCodes().then((d) => setCodes(d.codes)).catch(fail);
+  const loadUsers = () => api.adminUsers().then((d) => setUsers(d.users)).catch(fail);
+
+  useEffect(() => {
+    if (tab === "overview" && !overview) loadOverview();
+    if (tab === "codes" && !codes) loadCodes();
+    if (tab === "users" && !users) loadUsers();
+  }, [tab]);
+
+  const createCode = async () => {
+    setBusy(true);
+    try {
+      const d = await api.adminCreateCode({
+        note: form.note,
+        maxUses: form.maxUses ? parseInt(form.maxUses, 10) : null,
+        expiresInDays: form.expiresInDays ? parseInt(form.expiresInDays, 10) : null,
+      });
+      say(`コードを発行しました: ${d.code}`);
+      setForm({ note: "", maxUses: "", expiresInDays: "" });
+      loadCodes();
+    } catch (e) { fail(e); }
+    setBusy(false);
+  };
+  const toggleCode = async (code, active) => {
+    try { await api.adminSetCodeActive(code, active); loadCodes(); } catch (e) { fail(e); }
+  };
+  const copyCode = async (code) => {
+    try { await navigator.clipboard.writeText(code); say("コードをコピーしました"); } catch (e) {}
+  };
+
+  return (
+    <Shell title="🛠 管理ページ" onBack={onBack}>
+      <div className="space-y-3">
+        <div className="flex gap-1 overflow-x-auto pb-1">
+          {[["overview", "概要"], ["codes", "招待コード"], ["users", "ユーザー"]].map(([k, l]) => (
+            <button key={k} onClick={() => setTab(k)} className={`px-3 py-1.5 rounded-full text-xs font-bold whitespace-nowrap ${tab === k ? "bg-slate-900 text-white" : "bg-white border border-slate-200 text-slate-600"}`}>{l}</button>
+          ))}
+        </div>
+
+        {tab === "overview" && (
+          <>
+            {!overview && <Card className="p-6 text-center text-sm text-slate-400">読み込み中...</Card>}
+            {overview && (
+              <>
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    ["登録ユーザー数", `${overview.userCount}人`],
+                    ["作成チーム数", `${overview.teamCount}件`],
+                    ["有効サブスク数", `${overview.activeSubscriptions}件`],
+                    ["未消化クレジット合計", `${overview.outstandingCredits}回`],
+                  ].map(([k, v]) => (
+                    <Card key={k} className="p-3 text-center">
+                      <div className="text-lg font-bold">{v}</div>
+                      <div className="text-xs font-bold text-slate-500">{k}</div>
+                    </Card>
+                  ))}
+                </div>
+                <Card className="p-4 text-center bg-emerald-50 border-emerald-200">
+                  <div className="text-xs font-bold text-emerald-700">累計売上(Stripe決済実績)</div>
+                  <div className="text-3xl font-bold text-emerald-800 mt-1">¥{overview.totalRevenueYen.toLocaleString()}</div>
+                </Card>
+                <Card className="overflow-hidden">
+                  <div className="px-4 pt-3 pb-1"><h3 className="text-sm font-bold text-slate-700">最近の入金</h3></div>
+                  <div className="divide-y divide-slate-100">
+                    {overview.recentLedger.length === 0 && <p className="text-xs text-slate-400 px-4 py-3">まだ入金記録がありません。</p>}
+                    {overview.recentLedger.map((l) => (
+                      <div key={l.id} className="px-4 py-2.5 flex items-center justify-between text-sm">
+                        <div>
+                          <div className="font-bold">{l.detail}</div>
+                          <div className="text-xs text-slate-400 font-mono">{new Date(l.time).toLocaleString("ja-JP")}</div>
+                        </div>
+                        <div className="font-bold text-emerald-700">¥{l.amountYen.toLocaleString()}</div>
+                      </div>
+                    ))}
+                  </div>
+                </Card>
+              </>
+            )}
+          </>
+        )}
+
+        {tab === "codes" && (
+          <>
+            <Card className="p-4 space-y-2">
+              <div className="text-sm font-bold text-slate-700">友人・知人向け招待コードを発行</div>
+              <p className="text-xs text-slate-500">このコードを使った人は、AI提案が無期限で使い放題になります。何人でも同じコードを使えます(1人1回まで)。</p>
+              <Field label="メモ(任意)"><input className={inputCls} value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} placeholder="例:社内メンバー用" /></Field>
+              <div className="grid grid-cols-2 gap-2">
+                <Field label="利用可能人数(空欄=無制限)"><input type="number" className={inputCls} value={form.maxUses} onChange={(e) => setForm({ ...form, maxUses: e.target.value })} placeholder="例:10" /></Field>
+                <Field label="有効期限・日数(空欄=無期限)"><input type="number" className={inputCls} value={form.expiresInDays} onChange={(e) => setForm({ ...form, expiresInDays: e.target.value })} placeholder="例:30" /></Field>
+              </div>
+              <Btn className="w-full" onClick={createCode} disabled={busy}>{busy ? "発行中..." : "コードを発行する"}</Btn>
+            </Card>
+            {!codes && <Card className="p-6 text-center text-sm text-slate-400">読み込み中...</Card>}
+            {codes && codes.length === 0 && <Card className="p-6 text-center text-sm text-slate-400">まだ発行したコードがありません。</Card>}
+            {codes?.map((c) => (
+              <Card key={c.code} className="p-4">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="font-mono font-bold text-sm truncate">{c.code}</div>
+                    <div className="text-xs text-slate-400">{c.note || "(メモなし)"}</div>
+                  </div>
+                  <span className={`text-xs font-bold px-2 py-1 rounded-full shrink-0 ${c.active ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>{c.active ? "有効" : "無効"}</span>
+                </div>
+                <div className="text-xs text-slate-500 mt-1.5">
+                  利用回数:{c.usedCount}{c.maxUses ? ` / ${c.maxUses}` : "(無制限)"}
+                  {c.expiresAt && ` / 期限:${new Date(c.expiresAt).toLocaleDateString("ja-JP")}`}
+                </div>
+                <div className="flex gap-2 mt-2">
+                  <button onClick={() => copyCode(c.code)} className="text-xs font-bold text-indigo-600 px-2 py-1 bg-indigo-50 rounded-lg">コピー</button>
+                  <button onClick={() => toggleCode(c.code, !c.active)} className={`text-xs font-bold px-2 py-1 rounded-lg ${c.active ? "text-rose-600 bg-rose-50" : "text-emerald-600 bg-emerald-50"}`}>
+                    {c.active ? "無効化する" : "再度有効化する"}
+                  </button>
+                </div>
+              </Card>
+            ))}
+          </>
+        )}
+
+        {tab === "users" && (
+          <>
+            {!users && <Card className="p-6 text-center text-sm text-slate-400">読み込み中...</Card>}
+            {users?.map((u) => (
+              <Card key={u.id} className="p-3">
+                <div className="flex items-center justify-between">
+                  <div className="min-w-0">
+                    <div className="font-bold text-sm truncate">{u.name}</div>
+                    <div className="text-xs text-slate-400 truncate">{u.email}</div>
+                  </div>
+                  <div className="flex gap-1 shrink-0">
+                    {!!u.comp_unlimited && <span className="text-xs font-bold bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded" style={{ fontSize: 10 }}>招待</span>}
+                    {u.plan_type === "subscription" && !!u.subscription_active && <span className="text-xs font-bold bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded" style={{ fontSize: 10 }}>サブスク</span>}
+                  </div>
+                </div>
+                <div className="grid grid-cols-3 gap-2 mt-2 text-center">
+                  <div className="bg-slate-50 rounded-lg py-1.5">
+                    <div className="text-slate-400 font-bold" style={{ fontSize: 10 }}>クレジット</div>
+                    <div className="font-bold tabular-nums text-sm">{u.credit_balance}</div>
+                  </div>
+                  <div className="bg-slate-50 rounded-lg py-1.5">
+                    <div className="text-slate-400 font-bold" style={{ fontSize: 10 }}>累計P</div>
+                    <div className="font-bold tabular-nums text-sm">{u.total_points}</div>
+                  </div>
+                  <div className="bg-slate-50 rounded-lg py-1.5">
+                    <div className="text-slate-400 font-bold" style={{ fontSize: 10 }}>参加現場</div>
+                    <div className="font-bold tabular-nums text-sm">{u.sites_count}</div>
+                  </div>
+                </div>
+              </Card>
+            ))}
           </>
         )}
       </div>

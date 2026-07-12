@@ -93,14 +93,22 @@ const CREDIT_BUNDLES = {
 };
 async function getBilling(env, userId) {
   return await env.DB.prepare(
-    "SELECT plan_type, subscription_active, subscription_current_period_end, credit_balance, stripe_customer_id FROM users WHERE id = ?"
+    "SELECT plan_type, subscription_active, subscription_current_period_end, credit_balance, stripe_customer_id, comp_unlimited, day_pass_expires_at FROM users WHERE id = ?"
   ).bind(userId).first();
 }
 function billingOk(b) {
   if (!b) return false;
+  if (b.comp_unlimited) return true; // 友人・知人向け招待コードで付与された永続無料フラグ
+  if (b.day_pass_expires_at && b.day_pass_expires_at > now()) return true; // ポイント交換の1日パス
   if (b.plan_type === "subscription" && b.subscription_active) return true;
   if (b.plan_type === "credits" && b.credit_balance > 0) return true;
   return false;
+}
+
+/* 一時的に課金チェックを全面スキップするスイッチ。wrangler.tomlの[vars] FREE_MODE で切り替える。
+   課金を再開する際はこの値を"false"に戻すだけでよく、購入・招待コード等の仕組みはそのまま残る */
+function isFreeMode(env) {
+  return env.FREE_MODE === "true";
 }
 
 /* ---------------- チーム作成クォータ(サブスクは1日1件・月15件まで無料。超過分はクレジット消費) ---------------- */
@@ -124,9 +132,11 @@ function jstMonthRangeMs(ms) {
 }
 
 /* このオーナーのチーム作成状況(本日・当月の件数と、サブスク無料枠が残っているか)を返す。
-   削除済みチームも「作成した実績」としてカウントする(削除して無料枠を使い回すのを防ぐため) */
+   削除済みチームも「作成した実績」としてカウントする(削除して無料枠を使い回すのを防ぐため)。
+   友人・知人向け招待コード(comp_unlimited)は日次・月次の上限なく常に無料 */
 async function getTeamQuotaStatus(env, userId) {
   const billing = await getBilling(env, userId);
+  if (billing?.comp_unlimited) return { billing, freeAvailable: true, dayCount: 0, monthCount: 0 };
   const t = now();
   const [dayStart, dayEnd] = jstDayRangeMs(t);
   const [monthStart, monthEnd] = jstMonthRangeMs(t);
@@ -136,6 +146,13 @@ async function getTeamQuotaStatus(env, userId) {
     .bind(userId, monthStart, monthEnd).first())?.n || 0;
   const freeAvailable = !!billing?.subscription_active && dayCount < TEAM_DAILY_FREE_LIMIT && monthCount < TEAM_MONTHLY_FREE_LIMIT;
   return { billing, freeAvailable, dayCount, monthCount };
+}
+
+/* このメールアドレスがサイト管理者(作成者)かどうか。wrangler.tomlのvars SITE_ADMIN_EMAILSで指定(カンマ区切り) */
+function isSiteAdmin(env, user) {
+  if (!user) return false;
+  const admins = (env.SITE_ADMIN_EMAILS || "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+  return admins.includes(user.email.toLowerCase());
 }
 
 /* ---------------- 認証ミドルウェア ---------------- */
@@ -205,7 +222,7 @@ app.post("/api/v1/register", async (c) => {
   const token = uid("s_") + uid();
   await c.env.DB.prepare("INSERT INTO sessions (token, user_id, expires_at) VALUES (?,?,?)")
     .bind(token, id, now() + 30 * 24 * 3600 * 1000).run();
-  return ok(c, { token, user: { id, email, name } });
+  return ok(c, { token, user: { id, email, name }, isSiteAdmin: isSiteAdmin(c.env, { email }) });
 });
 
 app.post("/api/v1/login", async (c) => {
@@ -215,7 +232,7 @@ app.post("/api/v1/login", async (c) => {
   const token = uid("s_") + uid();
   await c.env.DB.prepare("INSERT INTO sessions (token, user_id, expires_at) VALUES (?,?,?)")
     .bind(token, u.id, now() + 30 * 24 * 3600 * 1000).run();
-  return ok(c, { token, user: { id: u.id, email: u.email, name: u.name } });
+  return ok(c, { token, user: { id: u.id, email: u.email, name: u.name }, isSiteAdmin: isSiteAdmin(c.env, u) });
 });
 
 app.post("/api/v1/logout", async (c) => {
@@ -228,7 +245,7 @@ app.post("/api/v1/logout", async (c) => {
 app.get("/api/v1/me", async (c) => {
   const u = c.get("user");
   if (!u) return ng(c, "AUTH-001", "未ログインです。", 401);
-  return ok(c, { user: u });
+  return ok(c, { user: u, isSiteAdmin: isSiteAdmin(c.env, u) });
 });
 
 /* ================================ チーム ================================ */
@@ -238,21 +255,25 @@ app.post("/api/v1/teams", async (c) => {
   const { siteName, venueName, section, date, aiEnabled } = await c.req.json();
   if (!siteName || !venueName || !date) return ng(c, "VAL-001", "現場名・会場名・開催日は必須です。");
 
-  // チーム作成の課金判定: サブスクは1日1件・月15件まで無料。それ以外はクレジットを1消費
-  const { freeAvailable, billing } = await getTeamQuotaStatus(c.env, u.id);
+  const freeMode = isFreeMode(c.env);
   let usedCredit = false;
-  if (!freeAvailable) {
-    if (!billing || billing.credit_balance <= 0) {
-      return ng(c, "BILL-001", `チーム作成にはプラン契約またはクレジットが必要です(月額プランは1日${TEAM_DAILY_FREE_LIMIT}件・月${TEAM_MONTHLY_FREE_LIMIT}件まで無料)。`, 402);
-    }
-    const dec = await c.env.DB.prepare("UPDATE users SET credit_balance = credit_balance - 1 WHERE id = ? AND credit_balance > 0").bind(u.id).run();
-    if (!dec.meta.changes) return ng(c, "BILL-001", "クレジット残高が不足しています。", 402);
-    usedCredit = true;
-  }
+  let finalAiEnabled = !!aiEnabled;
 
-  // 課金プランが無い場合は、AI希望があっても無視してOFFで作成する(安全側)。上でクレジットを使った場合は最新残高で判定
-  const aiBilling = aiEnabled ? await getBilling(c.env, u.id) : null;
-  const finalAiEnabled = aiEnabled && billingOk(aiBilling);
+  if (!freeMode) {
+    // チーム作成の課金判定: サブスクは1日1件・月15件まで無料。それ以外はクレジットを1消費
+    const { freeAvailable, billing } = await getTeamQuotaStatus(c.env, u.id);
+    if (!freeAvailable) {
+      if (!billing || billing.credit_balance <= 0) {
+        return ng(c, "BILL-001", `チーム作成にはプラン契約またはクレジットが必要です(月額プランは1日${TEAM_DAILY_FREE_LIMIT}件・月${TEAM_MONTHLY_FREE_LIMIT}件まで無料)。`, 402);
+      }
+      const dec = await c.env.DB.prepare("UPDATE users SET credit_balance = credit_balance - 1 WHERE id = ? AND credit_balance > 0").bind(u.id).run();
+      if (!dec.meta.changes) return ng(c, "BILL-001", "クレジット残高が不足しています。", 402);
+      usedCredit = true;
+    }
+    // 課金プランが無い場合は、AI希望があっても無視してOFFで作成する(安全側)。上でクレジットを使った場合は最新残高で判定
+    const aiBilling = aiEnabled ? await getBilling(c.env, u.id) : null;
+    finalAiEnabled = aiEnabled && billingOk(aiBilling);
+  }
 
   const id = uid("t_");
   const code = uid().slice(0, 8).toUpperCase();
@@ -262,13 +283,14 @@ app.post("/api/v1/teams", async (c) => {
   return ok(c, { team: { id, code, siteName, venueName, section, date, aiEnabled: finalAiEnabled, usedCredit } });
 });
 
-/* AI提案のON/OFF切り替え(オーナー・管理者)。ONにするにはチームオーナーのアカウントに有効なプランが必要 */
+/* AI提案のON/OFF切り替え(オーナー・管理者)。通常はチームオーナーのアカウントに有効なプランが必要だが、
+   FREE_MODE中は誰でもONにできる */
 app.patch("/api/v1/teams/:id/ai-enabled", async (c) => {
   const teamId = c.req.param("id");
   const me = await resolveParticipant(c, teamId);
   if (!isAdmin(me)) return ng(c, "AUTH-002", "この設定は管理者のみ変更できます。", 403);
   const { enabled } = await c.req.json();
-  if (enabled) {
+  if (enabled && !isFreeMode(c.env)) {
     const team = await c.env.DB.prepare("SELECT owner_user_id FROM teams WHERE id = ?").bind(teamId).first();
     const billing = await getBilling(c.env, team.owner_user_id);
     if (!billingOk(billing)) return ng(c, "BILL-001", "AI提案を使うには、月額プランの契約またはクレジットの購入が必要です。", 402);
@@ -635,13 +657,124 @@ app.get("/api/v1/billing", async (c) => {
   if (!u) return ng(c, "AUTH-001", "未ログインです。", 401);
   const b = await getBilling(c.env, u.id);
   const { freeAvailable, dayCount, monthCount } = await getTeamQuotaStatus(c.env, u.id);
+  const pointsRow = await c.env.DB.prepare("SELECT total_points FROM users WHERE id = ?").bind(u.id).first();
   return ok(c, {
+    freeMode: isFreeMode(c.env),
     planType: b?.plan_type || "none",
     subscriptionActive: !!b?.subscription_active,
     subscriptionEnd: b?.subscription_current_period_end || null,
     creditBalance: b?.credit_balance || 0,
+    compUnlimited: !!b?.comp_unlimited,
+    dayPassActive: !!(b?.day_pass_expires_at && b.day_pass_expires_at > now()),
+    dayPassExpiresAt: b?.day_pass_expires_at || null,
+    totalPoints: pointsRow?.total_points || 0,
     teamQuota: { freeAvailable, dayCount, monthCount, dailyLimit: TEAM_DAILY_FREE_LIMIT, monthlyLimit: TEAM_MONTHLY_FREE_LIMIT },
   });
+});
+
+/* 招待コード・友人コードの利用。友人コード(friend_unlimited)は何人でも使える。1人1コード1回まで */
+app.post("/api/v1/redeem", async (c) => {
+  const u = c.get("user");
+  if (!u) return ng(c, "AUTH-001", "未ログインです。", 401);
+  const { code } = await c.req.json();
+  if (!code) return ng(c, "VAL-001", "コードを入力してください。");
+  const row = await c.env.DB.prepare("SELECT * FROM redemption_codes WHERE code = ? AND active = 1").bind(code.trim()).first();
+  if (!row) return ng(c, "DATA-001", "無効なコードです。", 404);
+  if (row.expires_at && row.expires_at < now()) return ng(c, "DATA-003", "このコードは有効期限が切れています。", 409);
+  if (row.max_uses != null && row.used_count >= row.max_uses) return ng(c, "DATA-003", "このコードは利用上限に達しています。", 409);
+  const already = await c.env.DB.prepare("SELECT 1 FROM redemption_uses WHERE code = ? AND user_id = ?").bind(row.code, u.id).first();
+  if (already) return ng(c, "DATA-002", "このコードはすでに利用済みです。", 409);
+
+  try {
+    await c.env.DB.prepare("INSERT INTO redemption_uses (code, user_id, used_at) VALUES (?,?,?)").bind(row.code, u.id, now()).run();
+  } catch (e) {
+    return ng(c, "DATA-002", "このコードはすでに利用済みです。", 409);
+  }
+  await c.env.DB.prepare("UPDATE redemption_codes SET used_count = used_count + 1 WHERE code = ?").bind(row.code).run();
+
+  if (row.kind === "friend_unlimited") {
+    await c.env.DB.prepare("UPDATE users SET comp_unlimited = 1 WHERE id = ?").bind(u.id).run();
+    return ok(c, { granted: "friend_unlimited" });
+  }
+  return ng(c, "VAL-001", "このコードは利用できません。");
+});
+
+/* 貯めたポイントをAI1日パスと交換する(150P消費・自分専用・再利用不可) */
+const POINT_DAY_PASS_COST = 150;
+const DAY_MS = 24 * 3600 * 1000;
+app.post("/api/v1/points/exchange", async (c) => {
+  const u = c.get("user");
+  if (!u) return ng(c, "AUTH-001", "未ログインです。", 401);
+  const dec = await c.env.DB.prepare("UPDATE users SET total_points = total_points - ? WHERE id = ? AND total_points >= ?")
+    .bind(POINT_DAY_PASS_COST, u.id, POINT_DAY_PASS_COST).run();
+  if (!dec.meta.changes) return ng(c, "BILL-001", `ポイントが不足しています(必要:${POINT_DAY_PASS_COST}P)。`, 402);
+  const t = now();
+  // 既存の1日パスがまだ残っていればそこから延長、無ければ今から24時間
+  await c.env.DB.prepare("UPDATE users SET day_pass_expires_at = MAX(COALESCE(day_pass_expires_at, 0), ?) + ? WHERE id = ?")
+    .bind(t, DAY_MS, u.id).run();
+  const row = await c.env.DB.prepare("SELECT day_pass_expires_at FROM users WHERE id = ?").bind(u.id).first();
+  // 監査用に記録として1件発行(本人のみ有効・再利用不可)
+  const code = "PX" + uid().slice(0, 10).toUpperCase();
+  await c.env.DB.prepare(
+    "INSERT INTO redemption_codes (code, kind, note, max_uses, created_by, created_at, active) VALUES (?,?,?,?,?,?,0)"
+  ).bind(code, "point_day_pass", `${u.email} がポイント交換`, 1, u.id, t).run();
+  await c.env.DB.prepare("INSERT INTO redemption_uses (code, user_id, used_at) VALUES (?,?,?)").bind(code, u.id, t).run();
+  return ok(c, { expiresAt: row.day_pass_expires_at });
+});
+
+/* ================================ サイト管理(作成者専用) ================================ */
+app.get("/api/v1/admin/overview", async (c) => {
+  const u = c.get("user");
+  if (!isSiteAdmin(c.env, u)) return ng(c, "AUTH-002", "管理者専用の機能です。", 403);
+  const [userCount, teamCount, subCount, creditSum, revenue] = await Promise.all([
+    c.env.DB.prepare("SELECT COUNT(*) AS n FROM users").first(),
+    c.env.DB.prepare("SELECT COUNT(*) AS n FROM teams WHERE deleted = 0").first(),
+    c.env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE plan_type='subscription' AND subscription_active=1").first(),
+    c.env.DB.prepare("SELECT COALESCE(SUM(credit_balance),0) AS n FROM users").first(),
+    c.env.DB.prepare("SELECT COALESCE(SUM(amount_yen),0) AS n FROM billing_ledger").first(),
+  ]);
+  const recent = await c.env.DB.prepare("SELECT * FROM billing_ledger ORDER BY id DESC LIMIT 20").all();
+  return ok(c, {
+    userCount: userCount.n, teamCount: teamCount.n, activeSubscriptions: subCount.n,
+    outstandingCredits: creditSum.n, totalRevenueYen: revenue.n,
+    recentLedger: recent.results.map((r) => ({ id: r.id, kind: r.kind, amountYen: r.amount_yen, detail: r.detail, time: r.created_at })),
+  });
+});
+
+app.get("/api/v1/admin/codes", async (c) => {
+  const u = c.get("user");
+  if (!isSiteAdmin(c.env, u)) return ng(c, "AUTH-002", "管理者専用の機能です。", 403);
+  const { results } = await c.env.DB.prepare("SELECT * FROM redemption_codes WHERE kind = 'friend_unlimited' ORDER BY created_at DESC").all();
+  return ok(c, { codes: results.map((r) => ({ code: r.code, note: r.note, maxUses: r.max_uses, usedCount: r.used_count, active: !!r.active, createdAt: r.created_at, expiresAt: r.expires_at })) });
+});
+
+app.post("/api/v1/admin/codes", async (c) => {
+  const u = c.get("user");
+  if (!isSiteAdmin(c.env, u)) return ng(c, "AUTH-002", "管理者専用の機能です。", 403);
+  const { note, maxUses, expiresInDays } = await c.req.json();
+  const code = "FRIEND-" + uid().slice(0, 8).toUpperCase();
+  const expiresAt = expiresInDays ? now() + expiresInDays * 24 * 3600 * 1000 : null;
+  await c.env.DB.prepare(
+    "INSERT INTO redemption_codes (code, kind, note, max_uses, created_by, created_at, expires_at) VALUES (?,?,?,?,?,?,?)"
+  ).bind(code, "friend_unlimited", note || "", maxUses || null, u.id, now(), expiresAt).run();
+  return ok(c, { code });
+});
+
+app.patch("/api/v1/admin/codes/:code", async (c) => {
+  const u = c.get("user");
+  if (!isSiteAdmin(c.env, u)) return ng(c, "AUTH-002", "管理者専用の機能です。", 403);
+  const { active } = await c.req.json();
+  await c.env.DB.prepare("UPDATE redemption_codes SET active = ? WHERE code = ?").bind(active ? 1 : 0, c.req.param("code")).run();
+  return ok(c, {});
+});
+
+app.get("/api/v1/admin/users", async (c) => {
+  const u = c.get("user");
+  if (!isSiteAdmin(c.env, u)) return ng(c, "AUTH-002", "管理者専用の機能です。", 403);
+  const { results } = await c.env.DB.prepare(
+    "SELECT id, email, name, plan_type, subscription_active, credit_balance, comp_unlimited, total_points, sites_count, created_at FROM users ORDER BY created_at DESC LIMIT 200"
+  ).all();
+  return ok(c, { users: results });
 });
 
 app.post("/api/v1/billing/checkout", async (c) => {
@@ -719,11 +852,14 @@ app.post("/api/v1/billing/webhook", async (c) => {
   try {
     if (event.type === "checkout.session.completed") {
       const userId = obj.metadata?.userId;
+      const amountYen = obj.amount_total || 0; // JPYはゼロ小数通貨のため、そのまま円として扱える
       if (userId) {
         if (obj.mode === "subscription") {
           await c.env.DB.prepare(
             "UPDATE users SET plan_type='subscription', subscription_active=1, subscription_id=?, stripe_customer_id=? WHERE id=?"
           ).bind(obj.subscription, obj.customer, userId).run();
+          await c.env.DB.prepare("INSERT INTO billing_ledger (user_id, kind, amount_yen, detail, created_at) VALUES (?,?,?,?,?)")
+            .bind(userId, "subscription", amountYen, "月額プラン契約", now()).run();
         } else if (obj.mode === "payment") {
           const credits = parseInt(obj.metadata?.credits || "0", 10);
           if (credits > 0) {
@@ -734,10 +870,13 @@ app.post("/api/v1/billing/webhook", async (c) => {
                  stripe_customer_id = ?
                WHERE id = ?`
             ).bind(credits, obj.customer, userId).run();
+            await c.env.DB.prepare("INSERT INTO billing_ledger (user_id, kind, amount_yen, detail, created_at) VALUES (?,?,?,?,?)")
+              .bind(userId, "credits", amountYen, `クレジット${credits}回分`, now()).run();
           }
         }
       }
-    } else if (event.type === "customer.subscription.updated") {
+    }
+    if (event.type === "customer.subscription.updated") {
       const active = obj.status === "active" || obj.status === "trialing" ? 1 : 0;
       const periodEnd = obj.current_period_end ? obj.current_period_end * 1000 : null;
       const userId = obj.metadata?.userId;
@@ -779,13 +918,15 @@ app.post("/api/v1/teams/:id/ai-suggest", async (c) => {
   if (!isAdmin(me)) return ng(c, "AUTH-002", "AI提案は管理者のみ利用できます。", 403);
   const team = await c.env.DB.prepare("SELECT ai_enabled, owner_user_id FROM teams WHERE id = ?").bind(teamId).first();
   if (!team?.ai_enabled) return ng(c, "AUTH-002", "このチームはAI提案がOFFになっています。参加者一覧(詳細)からONにできます。", 403);
-  const billing = await getBilling(c.env, team.owner_user_id);
-  if (!billingOk(billing)) return ng(c, "BILL-001", "AI提案の利用枠がありません。プラン契約またはクレジット購入が必要です。", 402);
-  if (billing.plan_type === "credits") {
-    // 残高が1以上の場合のみ1減らす(D1の条件付きUPDATEで同時実行時も安全に処理)
-    const dec = await c.env.DB.prepare("UPDATE users SET credit_balance = credit_balance - 1 WHERE id = ? AND credit_balance > 0")
-      .bind(team.owner_user_id).run();
-    if (!dec.meta.changes) return ng(c, "BILL-001", "クレジット残高が不足しています。追加購入してください。", 402);
+  if (!isFreeMode(c.env)) {
+    const billing = await getBilling(c.env, team.owner_user_id);
+    if (!billingOk(billing)) return ng(c, "BILL-001", "AI提案の利用枠がありません。プラン契約またはクレジット購入が必要です。", 402);
+    if (billing.plan_type === "credits") {
+      // 残高が1以上の場合のみ1減らす(D1の条件付きUPDATEで同時実行時も安全に処理)
+      const dec = await c.env.DB.prepare("UPDATE users SET credit_balance = credit_balance - 1 WHERE id = ? AND credit_balance > 0")
+        .bind(team.owner_user_id).run();
+      if (!dec.meta.changes) return ng(c, "BILL-001", "クレジット残高が不足しています。追加購入してください。", 402);
+    }
   }
 
   const t = now();
