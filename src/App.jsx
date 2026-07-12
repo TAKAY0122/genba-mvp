@@ -1531,27 +1531,36 @@ function BillingScreen({ say, fail, onBack }) {
   const [loadErr, setLoadErr] = useState("");
   const [busy, setBusy] = useState("");
   const [codeInput, setCodeInput] = useState("");
+  const [selectedBundle, setSelectedBundle] = useState("50"); // クレジットの選択状態(デフォルトはおすすめの50回分)
+  const [comingSoonFor, setComingSoonFor] = useState(""); // "" | "sub" | "credits"
   const load = () => {
     setLoadErr("");
     api.getBilling().then(setBilling).catch(() => setLoadErr("決済は現在準備中です。"));
   };
   useEffect(() => { load(); }, []);
 
-  const failPayment = () => say("決済は現在準備中です。しばらくお待ちください。");
+  const selectSubscription = () => {
+    if (!billing.paymentsReady) { setComingSoonFor("sub"); return; }
+    subscribe();
+  };
+  const selectCredits = () => {
+    if (!billing.paymentsReady) { setComingSoonFor("credits"); return; }
+    buyCredits(selectedBundle);
+  };
   const subscribe = async () => {
     setBusy("sub");
     try { const d = await api.billingCheckout({ type: "subscription" }); location.href = d.url; }
-    catch (e) { failPayment(e); setBusy(""); }
+    catch (e) { say("決済は現在準備中です。しばらくお待ちください。"); setBusy(""); }
   };
   const buyCredits = async (bundle) => {
     setBusy(bundle);
     try { const d = await api.billingCheckout({ type: "credits", bundle }); location.href = d.url; }
-    catch (e) { failPayment(e); setBusy(""); }
+    catch (e) { say("決済は現在準備中です。しばらくお待ちください。"); setBusy(""); }
   };
   const openPortal = async () => {
     setBusy("portal");
     try { const d = await api.billingPortal(); location.href = d.url; }
-    catch (e) { failPayment(e); setBusy(""); }
+    catch (e) { say("決済は現在準備中です。しばらくお待ちください。"); setBusy(""); }
   };
   const redeem = async () => {
     if (!codeInput.trim()) return;
@@ -1569,12 +1578,12 @@ function BillingScreen({ say, fail, onBack }) {
   };
 
   const isSubscribed = billing?.planType === "subscription" && billing?.subscriptionActive;
-  const hasSpecialAccess = billing?.compUnlimited || billing?.dayPassActive;
   const BUNDLES = [
-    { key: "10", label: "10回分", price: "¥300", note: "お試しに" },
-    { key: "50", label: "50回分", price: "¥1,200", note: "1回あたり¥24" },
-    { key: "100", label: "100回分", price: "¥2,000", note: "1回あたり¥20・最もお得" },
+    { key: "10", label: "10回分", price: 300, unit: 30, note: "お試しに" },
+    { key: "50", label: "50回分", price: 1200, unit: 24, note: "" },
+    { key: "100", label: "100回分", price: 2000, unit: 20, note: "" },
   ];
+  const bestValueKey = "100";
 
   return (
     <Shell title="プラン・課金" onBack={onBack}>
@@ -1638,48 +1647,73 @@ function BillingScreen({ say, fail, onBack }) {
               </Card>
             )}
 
-            {billing.paymentsReady ? (
-              <>
-                <Card className="p-4">
-                  <div className="text-sm font-bold text-slate-700 mb-1">✨ 月額プラン</div>
-                  <div className="text-2xl font-bold">¥980<span className="text-sm font-normal text-slate-400">/月</span></div>
-                  <p className="text-xs text-slate-500 mt-1">チーム作成が1日1件・月15件まで無料になり、AI提案も使い放題になります。枠を超えた分はクレジットを消費します。いつでも解約できます。</p>
-                  {!isSubscribed && (
-                    <Btn className="w-full mt-3" onClick={subscribe} disabled={!!busy}>{busy === "sub" ? "処理中..." : "月額プランを契約する(クレジットカード)"}</Btn>
-                  )}
-                </Card>
-
-                <Card className="p-4">
-                  <div className="text-sm font-bold text-slate-700 mb-2">☕ クレジット(都度払い)</div>
-                  <p className="text-xs text-slate-500 mb-3">AI提案1回、または無料枠を超えたチーム作成1件につき1クレジット消費します。有効期限はありません。クレジットカードのほかPayPayもご利用いただけます。</p>
-                  <div className="space-y-2">
-                    {BUNDLES.map((b) => (
-                      <div key={b.key} className="flex items-center justify-between border border-slate-200 rounded-lg px-3 py-2.5">
-                        <div>
-                          <div className="text-sm font-bold">{b.label}</div>
-                          <div className="text-xs text-slate-400">{b.note}</div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className="font-bold">{b.price}</span>
-                          <Btn color="slate" onClick={() => buyCredits(b.key)} disabled={!!busy} className="py-1.5 text-xs">
-                            {busy === b.key ? "処理中..." : "購入"}
-                          </Btn>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </Card>
-              </>
-            ) : (
-              <Card className="p-5 text-center bg-slate-50 border-slate-200">
-                <div className="text-2xl mb-1">🚧</div>
-                <div className="text-sm font-bold text-slate-700">決済機能は現在準備中です</div>
-                <p className="text-xs text-slate-500 mt-1">
-                  クレジットカード・PayPayでの月額プラン(¥980/月)やクレジット購入は、今後実装予定です。<br />
-                  それまでの間は、上記の「毎月無料付与クレジット」「ポイント交換」「招待コード」でご利用いただけます。
-                </p>
+            {!billing.paymentsReady && (
+              <Card className="p-3 border-amber-200 bg-amber-50">
+                <p className="text-xs font-bold text-amber-700">🚧 決済機能は現在準備中です。下記はプレビューです。プランを選んでも、実際のお支払いは今しばらくお待ちください。</p>
               </Card>
             )}
+
+            {/* 月額プラン */}
+            <Card className={`p-4 ${!isSubscribed ? "border-indigo-300 ring-1 ring-indigo-100" : ""}`}>
+              <div className="flex items-center justify-between mb-1">
+                <div className="text-sm font-bold text-slate-700">✨ 月額プラン</div>
+                {isSubscribed && <span className="text-xs font-bold bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full">契約中</span>}
+              </div>
+              <div className="text-2xl font-bold">¥980<span className="text-sm font-normal text-slate-400">/月</span></div>
+              <ul className="mt-2 space-y-1">
+                {["AI提案が使い放題", "チーム作成 1日1件・月15件まで無料", "枠を超えた分はクレジットで補える", "いつでも解約可能"].map((f) => (
+                  <li key={f} className="text-xs text-slate-600 flex items-center gap-1.5"><span className="text-emerald-600 font-bold">✓</span>{f}</li>
+                ))}
+              </ul>
+              {!isSubscribed && (
+                <>
+                  <Btn className="w-full mt-3" onClick={selectSubscription} disabled={!!busy}>
+                    {busy === "sub" ? "処理中..." : billing.paymentsReady ? "月額プランを契約する(クレジットカード)" : "このプランを選ぶ"}
+                  </Btn>
+                  {comingSoonFor === "sub" && (
+                    <div className="mt-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2.5 text-center">
+                      <div className="text-xs font-bold text-amber-800">🚧 決済機能は現在準備中です</div>
+                      <p className="text-xs text-amber-600 mt-0.5">クレジットカードでのお支払いは今後実装予定です。もうしばらくお待ちください。</p>
+                    </div>
+                  )}
+                </>
+              )}
+            </Card>
+
+            {/* クレジット(都度払い) */}
+            <Card className="p-4">
+              <div className="text-sm font-bold text-slate-700 mb-1">☕ クレジット(都度払い)</div>
+              <p className="text-xs text-slate-500 mb-3">AI提案1回、または無料枠を超えたチーム作成1件につき1クレジット消費します。有効期限はありません。クレジットカードのほかPayPayもご利用いただけます。</p>
+              <div className="space-y-2">
+                {BUNDLES.map((b) => (
+                  <button key={b.key} onClick={() => setSelectedBundle(b.key)}
+                    className={`w-full flex items-center justify-between border rounded-lg px-3 py-2.5 text-left transition ${selectedBundle === b.key ? "border-indigo-500 bg-indigo-50" : "border-slate-200 bg-white"}`}>
+                    <div className="flex items-center gap-2.5">
+                      <span className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 ${selectedBundle === b.key ? "border-indigo-600 bg-indigo-600" : "border-slate-300"}`}>
+                        {selectedBundle === b.key && <span className="w-2 h-2 rounded-full bg-white" />}
+                      </span>
+                      <div>
+                        <div className="text-sm font-bold flex items-center gap-1.5">
+                          {b.label}
+                          {b.key === bestValueKey && <span className="text-xs font-bold bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded" style={{ fontSize: 10 }}>おすすめ</span>}
+                        </div>
+                        <div className="text-xs text-slate-400">1回あたり¥{b.unit}{b.note && ` ・ ${b.note}`}</div>
+                      </div>
+                    </div>
+                    <span className="font-bold shrink-0">¥{b.price.toLocaleString()}</span>
+                  </button>
+                ))}
+              </div>
+              <Btn className="w-full mt-3" onClick={selectCredits} disabled={!!busy}>
+                {busy === selectedBundle ? "処理中..." : billing.paymentsReady ? `¥${BUNDLES.find((b) => b.key === selectedBundle).price.toLocaleString()} を購入する` : "選んだクレジットを購入する"}
+              </Btn>
+              {comingSoonFor === "credits" && (
+                <div className="mt-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2.5 text-center">
+                  <div className="text-xs font-bold text-amber-800">🚧 決済機能は現在準備中です</div>
+                  <p className="text-xs text-amber-600 mt-0.5">クレジットカード・PayPayでのお支払いは今後実装予定です。それまでは上記の「毎月無料付与クレジット」「ポイント交換」「招待コード」をご利用ください。</p>
+                </div>
+              )}
+            </Card>
 
             <Card className="p-4">
               <div className="text-sm font-bold text-slate-700 mb-2">☕ ポイントで交換</div>

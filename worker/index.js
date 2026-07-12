@@ -768,26 +768,34 @@ app.post("/api/v1/points/exchange", async (c) => {
 app.get("/api/v1/admin/overview", async (c) => {
   const u = c.get("user");
   if (!isSiteAdmin(c.env, u)) return ng(c, "AUTH-002", "管理者専用の機能です。", 403);
-  const [userCount, teamCount, subCount, creditSum, revenue] = await Promise.all([
-    c.env.DB.prepare("SELECT COUNT(*) AS n FROM users").first(),
-    c.env.DB.prepare("SELECT COUNT(*) AS n FROM teams WHERE deleted = 0").first(),
-    c.env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE plan_type='subscription' AND subscription_active=1").first(),
-    c.env.DB.prepare("SELECT COALESCE(SUM(credit_balance),0) AS n FROM users").first(),
-    c.env.DB.prepare("SELECT COALESCE(SUM(amount_yen),0) AS n FROM billing_ledger").first(),
-  ]);
-  const recent = await c.env.DB.prepare("SELECT * FROM billing_ledger ORDER BY id DESC LIMIT 20").all();
-  return ok(c, {
-    userCount: userCount.n, teamCount: teamCount.n, activeSubscriptions: subCount.n,
-    outstandingCredits: creditSum.n, totalRevenueYen: revenue.n,
-    recentLedger: recent.results.map((r) => ({ id: r.id, kind: r.kind, amountYen: r.amount_yen, detail: r.detail, time: r.created_at })),
-  });
+  try {
+    const [userCount, teamCount, subCount, creditSum, revenue] = await Promise.all([
+      c.env.DB.prepare("SELECT COUNT(*) AS n FROM users").first(),
+      c.env.DB.prepare("SELECT COUNT(*) AS n FROM teams WHERE deleted = 0").first(),
+      c.env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE plan_type='subscription' AND subscription_active=1").first(),
+      c.env.DB.prepare("SELECT COALESCE(SUM(credit_balance),0) AS n FROM users").first(),
+      c.env.DB.prepare("SELECT COALESCE(SUM(amount_yen),0) AS n FROM billing_ledger").first(),
+    ]);
+    const recent = await c.env.DB.prepare("SELECT * FROM billing_ledger ORDER BY id DESC LIMIT 20").all();
+    return ok(c, {
+      userCount: userCount.n, teamCount: teamCount.n, activeSubscriptions: subCount.n,
+      outstandingCredits: creditSum.n, totalRevenueYen: revenue.n,
+      recentLedger: recent.results.map((r) => ({ id: r.id, kind: r.kind, amountYen: r.amount_yen, detail: r.detail, time: r.created_at })),
+    });
+  } catch (e) {
+    return ng(c, "SYS-001", `管理データの取得に失敗しました。データベースの更新(npm run db:migrate:remote)が完了していない可能性があります。詳細: ${e.message}`, 500);
+  }
 });
 
 app.get("/api/v1/admin/codes", async (c) => {
   const u = c.get("user");
   if (!isSiteAdmin(c.env, u)) return ng(c, "AUTH-002", "管理者専用の機能です。", 403);
-  const { results } = await c.env.DB.prepare("SELECT * FROM redemption_codes WHERE kind IN ('friend_unlimited','credit_grant') ORDER BY created_at DESC").all();
-  return ok(c, { codes: results.map((r) => ({ code: r.code, kind: r.kind, creditAmount: r.credit_amount, note: r.note, maxUses: r.max_uses, usedCount: r.used_count, active: !!r.active, createdAt: r.created_at, expiresAt: r.expires_at })) });
+  try {
+    const { results } = await c.env.DB.prepare("SELECT * FROM redemption_codes WHERE kind IN ('friend_unlimited','credit_grant') ORDER BY created_at DESC").all();
+    return ok(c, { codes: results.map((r) => ({ code: r.code, kind: r.kind, creditAmount: r.credit_amount, note: r.note, maxUses: r.max_uses, usedCount: r.used_count, active: !!r.active, createdAt: r.created_at, expiresAt: r.expires_at })) });
+  } catch (e) {
+    return ng(c, "SYS-001", `招待コードの取得に失敗しました。データベースの更新(npm run db:migrate:remote)が完了していない可能性があります。詳細: ${e.message}`, 500);
+  }
 });
 
 app.post("/api/v1/admin/codes", async (c) => {
@@ -798,27 +806,39 @@ app.post("/api/v1/admin/codes", async (c) => {
   if (useKind === "credit_grant" && (!creditAmount || creditAmount <= 0)) return ng(c, "VAL-001", "付与するクレジット数を入力してください。");
   const code = (useKind === "credit_grant" ? "CREDIT-" : "FRIEND-") + uid().slice(0, 8).toUpperCase();
   const expiresAt = expiresInDays ? now() + expiresInDays * 24 * 3600 * 1000 : null;
-  await c.env.DB.prepare(
-    "INSERT INTO redemption_codes (code, kind, note, max_uses, credit_amount, created_by, created_at, expires_at) VALUES (?,?,?,?,?,?,?,?)"
-  ).bind(code, useKind, note || "", maxUses || null, useKind === "credit_grant" ? creditAmount : 0, u.id, now(), expiresAt).run();
-  return ok(c, { code });
+  try {
+    await c.env.DB.prepare(
+      "INSERT INTO redemption_codes (code, kind, note, max_uses, credit_amount, created_by, created_at, expires_at) VALUES (?,?,?,?,?,?,?,?)"
+    ).bind(code, useKind, note || "", maxUses || null, useKind === "credit_grant" ? creditAmount : 0, u.id, now(), expiresAt).run();
+    return ok(c, { code });
+  } catch (e) {
+    return ng(c, "SYS-001", `コードの発行に失敗しました。データベースの更新(npm run db:migrate:remote)が完了していない可能性があります。詳細: ${e.message}`, 500);
+  }
 });
 
 app.patch("/api/v1/admin/codes/:code", async (c) => {
   const u = c.get("user");
   if (!isSiteAdmin(c.env, u)) return ng(c, "AUTH-002", "管理者専用の機能です。", 403);
   const { active } = await c.req.json();
-  await c.env.DB.prepare("UPDATE redemption_codes SET active = ? WHERE code = ?").bind(active ? 1 : 0, c.req.param("code")).run();
-  return ok(c, {});
+  try {
+    await c.env.DB.prepare("UPDATE redemption_codes SET active = ? WHERE code = ?").bind(active ? 1 : 0, c.req.param("code")).run();
+    return ok(c, {});
+  } catch (e) {
+    return ng(c, "SYS-001", `更新に失敗しました。詳細: ${e.message}`, 500);
+  }
 });
 
 app.get("/api/v1/admin/users", async (c) => {
   const u = c.get("user");
   if (!isSiteAdmin(c.env, u)) return ng(c, "AUTH-002", "管理者専用の機能です。", 403);
-  const { results } = await c.env.DB.prepare(
-    "SELECT id, email, name, plan_type, subscription_active, credit_balance, comp_unlimited, total_points, sites_count, created_at FROM users ORDER BY created_at DESC LIMIT 200"
-  ).all();
-  return ok(c, { users: results });
+  try {
+    const { results } = await c.env.DB.prepare(
+      "SELECT id, email, name, plan_type, subscription_active, credit_balance, comp_unlimited, total_points, sites_count, created_at FROM users ORDER BY created_at DESC LIMIT 200"
+    ).all();
+    return ok(c, { users: results });
+  } catch (e) {
+    return ng(c, "SYS-001", `ユーザー一覧の取得に失敗しました。詳細: ${e.message}`, 500);
+  }
 });
 
 app.post("/api/v1/billing/checkout", async (c) => {
