@@ -48,6 +48,11 @@ export const api = {
   me: () => call("GET", "/api/v1/me", null, store.getSession()),
   mypage: () => call("GET", "/api/v1/mypage", null, store.getSession()),
 
+  // 課金
+  getBilling: () => call("GET", "/api/v1/billing", null, store.getSession()),
+  billingCheckout: (b) => call("POST", "/api/v1/billing/checkout", b, store.getSession()),
+  billingPortal: () => call("POST", "/api/v1/billing/portal", {}, store.getSession()),
+
   // チーム
   createTeam: (b) => call("POST", "/api/v1/teams", b, store.getSession()),
   setAiEnabled: (id, enabled) => call("PATCH", `/api/v1/teams/${id}/ai-enabled`, { enabled }, teamToken(id)),

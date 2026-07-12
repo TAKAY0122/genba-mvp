@@ -42,6 +42,102 @@ async function verifyPassword(password, stored) {
   return diff === 0;
 }
 
+/* ---------------- Stripe連携(SDKを使わずREST APIを直接呼ぶ) ---------------- */
+async function stripeFetch(env, path, params, method = "POST") {
+  const body = new URLSearchParams();
+  const flatten = (obj, prefix = "") => {
+    for (const [k, v] of Object.entries(obj)) {
+      const key = prefix ? `${prefix}[${k}]` : k;
+      if (Array.isArray(v)) {
+        v.forEach((item, i) => {
+          if (item && typeof item === "object") flatten(item, `${key}[${i}]`);
+          else body.append(`${key}[${i}]`, item);
+        });
+      } else if (v && typeof v === "object") {
+        flatten(v, key);
+      } else if (v !== undefined && v !== null) {
+        body.append(key, v);
+      }
+    }
+  };
+  flatten(params);
+  const res = await fetch(`https://api.stripe.com/v1/${path}`, {
+    method,
+    headers: { Authorization: `Bearer ${env.STRIPE_SECRET_KEY}`, "Content-Type": "application/x-www-form-urlencoded" },
+    body: method === "GET" ? undefined : body,
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error?.message || `Stripe error ${res.status}`);
+  return data;
+}
+
+/* Stripe Webhookの署名検証(Web Cryptoで手動実装。ライブラリ不使用) */
+async function verifyStripeSignature(payload, sigHeader, secret) {
+  if (!sigHeader) return false;
+  const parts = Object.fromEntries(sigHeader.split(",").map((p) => p.split("=")));
+  if (!parts.t || !parts.v1) return false;
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const sigBuf = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${parts.t}.${payload}`));
+  const expected = [...new Uint8Array(sigBuf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  if (expected.length !== parts.v1.length) return false;
+  let diff = 0;
+  for (let i = 0; i < expected.length; i++) diff |= expected.charCodeAt(i) ^ parts.v1.charCodeAt(i);
+  return diff === 0;
+}
+
+/* ---------------- 課金状態の判定 ---------------- */
+const CREDIT_BUNDLES = {
+  "10": { credits: 10, priceEnvKey: "STRIPE_PRICE_CREDITS_10" },
+  "50": { credits: 50, priceEnvKey: "STRIPE_PRICE_CREDITS_50" },
+  "100": { credits: 100, priceEnvKey: "STRIPE_PRICE_CREDITS_100" },
+};
+async function getBilling(env, userId) {
+  return await env.DB.prepare(
+    "SELECT plan_type, subscription_active, subscription_current_period_end, credit_balance, stripe_customer_id FROM users WHERE id = ?"
+  ).bind(userId).first();
+}
+function billingOk(b) {
+  if (!b) return false;
+  if (b.plan_type === "subscription" && b.subscription_active) return true;
+  if (b.plan_type === "credits" && b.credit_balance > 0) return true;
+  return false;
+}
+
+/* ---------------- チーム作成クォータ(サブスクは1日1件・月15件まで無料。超過分はクレジット消費) ---------------- */
+const TEAM_DAILY_FREE_LIMIT = 1;
+const TEAM_MONTHLY_FREE_LIMIT = 15;
+
+function jstDateParts(ms) {
+  const d = new Date(ms + 9 * 3600 * 1000); // JSTの壁時計時刻にずらしてから読む
+  return { y: d.getUTCFullYear(), m: d.getUTCMonth() + 1, day: d.getUTCDate() };
+}
+function jstDayRangeMs(ms) {
+  const { y, m, day } = jstDateParts(ms);
+  const start = Date.UTC(y, m - 1, day) - 9 * 3600 * 1000; // JST 00:00 → UTC epoch ms
+  return [start, start + 24 * 3600 * 1000];
+}
+function jstMonthRangeMs(ms) {
+  const { y, m } = jstDateParts(ms);
+  const start = Date.UTC(y, m - 1, 1) - 9 * 3600 * 1000;
+  const end = Date.UTC(m === 12 ? y + 1 : y, m === 12 ? 0 : m, 1) - 9 * 3600 * 1000;
+  return [start, end];
+}
+
+/* このオーナーのチーム作成状況(本日・当月の件数と、サブスク無料枠が残っているか)を返す。
+   削除済みチームも「作成した実績」としてカウントする(削除して無料枠を使い回すのを防ぐため) */
+async function getTeamQuotaStatus(env, userId) {
+  const billing = await getBilling(env, userId);
+  const t = now();
+  const [dayStart, dayEnd] = jstDayRangeMs(t);
+  const [monthStart, monthEnd] = jstMonthRangeMs(t);
+  const dayCount = (await env.DB.prepare("SELECT COUNT(*) AS n FROM teams WHERE owner_user_id = ? AND created_at >= ? AND created_at < ?")
+    .bind(userId, dayStart, dayEnd).first())?.n || 0;
+  const monthCount = (await env.DB.prepare("SELECT COUNT(*) AS n FROM teams WHERE owner_user_id = ? AND created_at >= ? AND created_at < ?")
+    .bind(userId, monthStart, monthEnd).first())?.n || 0;
+  const freeAvailable = !!billing?.subscription_active && dayCount < TEAM_DAILY_FREE_LIMIT && monthCount < TEAM_MONTHLY_FREE_LIMIT;
+  return { billing, freeAvailable, dayCount, monthCount };
+}
+
 /* ---------------- 認証ミドルウェア ---------------- */
 app.use("/api/*", async (c, next) => {
   const auth = c.req.header("Authorization") || "";
@@ -141,20 +237,42 @@ app.post("/api/v1/teams", async (c) => {
   if (!u) return ng(c, "AUTH-001", "チーム作成にはログインが必要です。", 401);
   const { siteName, venueName, section, date, aiEnabled } = await c.req.json();
   if (!siteName || !venueName || !date) return ng(c, "VAL-001", "現場名・会場名・開催日は必須です。");
+
+  // チーム作成の課金判定: サブスクは1日1件・月15件まで無料。それ以外はクレジットを1消費
+  const { freeAvailable, billing } = await getTeamQuotaStatus(c.env, u.id);
+  let usedCredit = false;
+  if (!freeAvailable) {
+    if (!billing || billing.credit_balance <= 0) {
+      return ng(c, "BILL-001", `チーム作成にはプラン契約またはクレジットが必要です(月額プランは1日${TEAM_DAILY_FREE_LIMIT}件・月${TEAM_MONTHLY_FREE_LIMIT}件まで無料)。`, 402);
+    }
+    const dec = await c.env.DB.prepare("UPDATE users SET credit_balance = credit_balance - 1 WHERE id = ? AND credit_balance > 0").bind(u.id).run();
+    if (!dec.meta.changes) return ng(c, "BILL-001", "クレジット残高が不足しています。", 402);
+    usedCredit = true;
+  }
+
+  // 課金プランが無い場合は、AI希望があっても無視してOFFで作成する(安全側)。上でクレジットを使った場合は最新残高で判定
+  const aiBilling = aiEnabled ? await getBilling(c.env, u.id) : null;
+  const finalAiEnabled = aiEnabled && billingOk(aiBilling);
+
   const id = uid("t_");
   const code = uid().slice(0, 8).toUpperCase();
   await c.env.DB.prepare(
     "INSERT INTO teams (id, code, site_name, venue_name, section, event_date, owner_user_id, ai_enabled, created_at) VALUES (?,?,?,?,?,?,?,?,?)"
-  ).bind(id, code, siteName, venueName, section || "", date, u.id, aiEnabled ? 1 : 0, now()).run();
-  return ok(c, { team: { id, code, siteName, venueName, section, date, aiEnabled: !!aiEnabled } });
+  ).bind(id, code, siteName, venueName, section || "", date, u.id, finalAiEnabled ? 1 : 0, now()).run();
+  return ok(c, { team: { id, code, siteName, venueName, section, date, aiEnabled: finalAiEnabled, usedCredit } });
 });
 
-/* AI提案のON/OFF切り替え(オーナー・管理者) */
+/* AI提案のON/OFF切り替え(オーナー・管理者)。ONにするにはチームオーナーのアカウントに有効なプランが必要 */
 app.patch("/api/v1/teams/:id/ai-enabled", async (c) => {
   const teamId = c.req.param("id");
   const me = await resolveParticipant(c, teamId);
   if (!isAdmin(me)) return ng(c, "AUTH-002", "この設定は管理者のみ変更できます。", 403);
   const { enabled } = await c.req.json();
+  if (enabled) {
+    const team = await c.env.DB.prepare("SELECT owner_user_id FROM teams WHERE id = ?").bind(teamId).first();
+    const billing = await getBilling(c.env, team.owner_user_id);
+    if (!billingOk(billing)) return ng(c, "BILL-001", "AI提案を使うには、月額プランの契約またはクレジットの購入が必要です。", 402);
+  }
   await c.env.DB.prepare("UPDATE teams SET ai_enabled = ? WHERE id = ?").bind(enabled ? 1 : 0, teamId).run();
   await audit(c.env, teamId, actorName(me), "AI提案設定", "AI提案の切り替え", "", enabled ? "ON" : "OFF");
   return ok(c, { aiEnabled: !!enabled });
@@ -511,6 +629,132 @@ app.get("/api/v1/mypage", async (c) => {
   return ok(c, { user: u, history: results, badges: [...badgeSet] });
 });
 
+/* ================================ 課金(Stripe) ================================ */
+app.get("/api/v1/billing", async (c) => {
+  const u = c.get("user");
+  if (!u) return ng(c, "AUTH-001", "未ログインです。", 401);
+  const b = await getBilling(c.env, u.id);
+  const { freeAvailable, dayCount, monthCount } = await getTeamQuotaStatus(c.env, u.id);
+  return ok(c, {
+    planType: b?.plan_type || "none",
+    subscriptionActive: !!b?.subscription_active,
+    subscriptionEnd: b?.subscription_current_period_end || null,
+    creditBalance: b?.credit_balance || 0,
+    teamQuota: { freeAvailable, dayCount, monthCount, dailyLimit: TEAM_DAILY_FREE_LIMIT, monthlyLimit: TEAM_MONTHLY_FREE_LIMIT },
+  });
+});
+
+app.post("/api/v1/billing/checkout", async (c) => {
+  const u = c.get("user");
+  if (!u) return ng(c, "AUTH-001", "未ログインです。", 401);
+  if (!c.env.STRIPE_SECRET_KEY) return ng(c, "SYS-002", "決済機能が未設定です。しばらくしてから再度お試しください。", 503);
+  const { type, bundle } = await c.req.json();
+  const row = await c.env.DB.prepare("SELECT stripe_customer_id FROM users WHERE id = ?").bind(u.id).first();
+  let customerId = row?.stripe_customer_id;
+  try {
+    if (!customerId) {
+      const cust = await stripeFetch(c.env, "customers", { email: u.email, name: u.name, metadata: { userId: u.id } });
+      customerId = cust.id;
+      await c.env.DB.prepare("UPDATE users SET stripe_customer_id = ? WHERE id = ?").bind(customerId, u.id).run();
+    }
+    const origin = new URL(c.req.url).origin;
+    let session;
+    if (type === "subscription") {
+      if (!c.env.STRIPE_PRICE_SUBSCRIPTION) return ng(c, "SYS-002", "月額プランは現在準備中です。", 503);
+      session = await stripeFetch(c.env, "checkout/sessions", {
+        mode: "subscription",
+        customer: customerId,
+        line_items: [{ price: c.env.STRIPE_PRICE_SUBSCRIPTION, quantity: 1 }],
+        success_url: `${origin}/?billing=success`,
+        cancel_url: `${origin}/?billing=cancel`,
+        metadata: { userId: u.id, kind: "subscription" },
+        subscription_data: { metadata: { userId: u.id } },
+      });
+    } else if (type === "credits") {
+      const b = CREDIT_BUNDLES[bundle];
+      if (!b) return ng(c, "VAL-001", "購入するクレジット数を選択してください。");
+      const priceId = c.env[b.priceEnvKey];
+      if (!priceId) return ng(c, "SYS-002", "このクレジットプランは現在準備中です。", 503);
+      session = await stripeFetch(c.env, "checkout/sessions", {
+        mode: "payment",
+        customer: customerId,
+        line_items: [{ price: priceId, quantity: 1 }],
+        success_url: `${origin}/?billing=success`,
+        cancel_url: `${origin}/?billing=cancel`,
+        metadata: { userId: u.id, kind: "credits", credits: String(b.credits) },
+      });
+    } else {
+      return ng(c, "VAL-001", "購入内容を指定してください。");
+    }
+    return ok(c, { url: session.url });
+  } catch (e) {
+    return ng(c, "SYS-001", `決済ページの作成に失敗しました: ${e.message}`, 500);
+  }
+});
+
+app.post("/api/v1/billing/portal", async (c) => {
+  const u = c.get("user");
+  if (!u) return ng(c, "AUTH-001", "未ログインです。", 401);
+  const row = await c.env.DB.prepare("SELECT stripe_customer_id FROM users WHERE id = ?").bind(u.id).first();
+  if (!row?.stripe_customer_id) return ng(c, "DATA-001", "契約情報が見つかりません。", 404);
+  try {
+    const origin = new URL(c.req.url).origin;
+    const session = await stripeFetch(c.env, "billing_portal/sessions", { customer: row.stripe_customer_id, return_url: `${origin}/` });
+    return ok(c, { url: session.url });
+  } catch (e) {
+    return ng(c, "SYS-001", `契約管理ページの作成に失敗しました: ${e.message}`, 500);
+  }
+});
+
+/* Stripeからのイベント通知を受け取る。認証不要・署名検証のみ */
+app.post("/api/v1/billing/webhook", async (c) => {
+  const sig = c.req.header("stripe-signature");
+  const payload = await c.req.text();
+  if (!c.env.STRIPE_WEBHOOK_SECRET) return c.text("webhook secret not configured", 500);
+  const valid = await verifyStripeSignature(payload, sig, c.env.STRIPE_WEBHOOK_SECRET);
+  if (!valid) return c.text("invalid signature", 400);
+  let event;
+  try { event = JSON.parse(payload); } catch (e) { return c.text("invalid payload", 400); }
+  const obj = event.data?.object || {};
+  try {
+    if (event.type === "checkout.session.completed") {
+      const userId = obj.metadata?.userId;
+      if (userId) {
+        if (obj.mode === "subscription") {
+          await c.env.DB.prepare(
+            "UPDATE users SET plan_type='subscription', subscription_active=1, subscription_id=?, stripe_customer_id=? WHERE id=?"
+          ).bind(obj.subscription, obj.customer, userId).run();
+        } else if (obj.mode === "payment") {
+          const credits = parseInt(obj.metadata?.credits || "0", 10);
+          if (credits > 0) {
+            await c.env.DB.prepare(
+              `UPDATE users SET
+                 plan_type = CASE WHEN plan_type = 'subscription' AND subscription_active = 1 THEN plan_type ELSE 'credits' END,
+                 credit_balance = credit_balance + ?,
+                 stripe_customer_id = ?
+               WHERE id = ?`
+            ).bind(credits, obj.customer, userId).run();
+          }
+        }
+      }
+    } else if (event.type === "customer.subscription.updated") {
+      const active = obj.status === "active" || obj.status === "trialing" ? 1 : 0;
+      const periodEnd = obj.current_period_end ? obj.current_period_end * 1000 : null;
+      const userId = obj.metadata?.userId;
+      if (userId) {
+        await c.env.DB.prepare("UPDATE users SET subscription_active=?, subscription_current_period_end=? WHERE id=?").bind(active, periodEnd, userId).run();
+      } else {
+        await c.env.DB.prepare("UPDATE users SET subscription_active=?, subscription_current_period_end=? WHERE subscription_id=?").bind(active, periodEnd, obj.id).run();
+      }
+    } else if (event.type === "customer.subscription.deleted") {
+      await c.env.DB.prepare("UPDATE users SET subscription_active=0 WHERE subscription_id=?").bind(obj.id).run();
+    }
+  } catch (e) {
+    console.error("billing webhook handling error:", e.message);
+  }
+  return c.text("ok");
+});
+
 /* ================================ AI提案 ================================ */
 function ruleSuggestions(state) {
   const sug = [];
@@ -533,8 +777,16 @@ app.post("/api/v1/teams/:id/ai-suggest", async (c) => {
   const teamId = c.req.param("id");
   const me = await resolveParticipant(c, teamId);
   if (!isAdmin(me)) return ng(c, "AUTH-002", "AI提案は管理者のみ利用できます。", 403);
-  const team = await c.env.DB.prepare("SELECT ai_enabled FROM teams WHERE id = ?").bind(teamId).first();
-  if (!team?.ai_enabled) return ng(c, "AUTH-002", "このチームはAI提案がOFFになっています。システム設定からONにできます。", 403);
+  const team = await c.env.DB.prepare("SELECT ai_enabled, owner_user_id FROM teams WHERE id = ?").bind(teamId).first();
+  if (!team?.ai_enabled) return ng(c, "AUTH-002", "このチームはAI提案がOFFになっています。参加者一覧(詳細)からONにできます。", 403);
+  const billing = await getBilling(c.env, team.owner_user_id);
+  if (!billingOk(billing)) return ng(c, "BILL-001", "AI提案の利用枠がありません。プラン契約またはクレジット購入が必要です。", 402);
+  if (billing.plan_type === "credits") {
+    // 残高が1以上の場合のみ1減らす(D1の条件付きUPDATEで同時実行時も安全に処理)
+    const dec = await c.env.DB.prepare("UPDATE users SET credit_balance = credit_balance - 1 WHERE id = ? AND credit_balance > 0")
+      .bind(team.owner_user_id).run();
+    if (!dec.meta.changes) return ng(c, "BILL-001", "クレジット残高が不足しています。追加購入してください。", 402);
+  }
 
   const t = now();
   const parts = (await c.env.DB.prepare("SELECT * FROM participants WHERE team_id = ?").bind(teamId).all()).results;

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import QRCode from "qrcode";
 import { api, store } from "./api.js";
+import { SPONSOR_SLOTS, AFFILIATE_SLOTS } from "./ads.js";
 
 /* =====================================================================
    現場運営支援システム MVP - フロントエンド (API接続版)
@@ -89,6 +90,38 @@ const Field = ({ label, children }) => (
 );
 const inputCls = "w-full px-3 py-2.5 rounded-lg border border-slate-300 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500";
 
+/* 広告1件分のカード表示 */
+function AdCard({ ad, badgeColor }) {
+  return (
+    <a href={ad.url} target="_blank" rel="noopener noreferrer sponsored"
+      className="block bg-white rounded-xl border border-slate-200 p-3 hover:border-slate-300 transition">
+      <div className="flex items-center gap-3">
+        {ad.imageUrl && <img src={ad.imageUrl} alt="" className="w-14 h-14 rounded-lg object-cover shrink-0" />}
+        <div className="min-w-0">
+          <div className="flex items-center gap-1.5">
+            <span className={`text-xs font-bold border rounded px-1 ${badgeColor}`} style={{ fontSize: 10 }}>{ad.label || "広告"}</span>
+            <span className="text-sm font-bold truncate">{ad.title}</span>
+          </div>
+          <div className="text-xs text-slate-500 truncate">{ad.body}</div>
+        </div>
+      </div>
+    </a>
+  );
+}
+
+/* 広告エリア: 直接スポンサー(常時全件表示)+ アフィリエイト(ランダム1件)。
+   どちらも空なら何も表示しない。業務画面(Command Center等)には配置しないこと。 */
+function AdSection() {
+  const affiliate = AFFILIATE_SLOTS && AFFILIATE_SLOTS.length > 0 ? AFFILIATE_SLOTS[Math.floor(Math.random() * AFFILIATE_SLOTS.length)] : null;
+  if ((!SPONSOR_SLOTS || SPONSOR_SLOTS.length === 0) && !affiliate) return null;
+  return (
+    <div className="space-y-2">
+      {(SPONSOR_SLOTS || []).map((ad, i) => <AdCard key={`sp-${i}`} ad={ad} badgeColor="text-indigo-500 border-indigo-300" />)}
+      {affiliate && <AdCard ad={affiliate} badgeColor="text-slate-400 border-slate-300" />}
+    </div>
+  );
+}
+
 function QR({ text, size = 180 }) {
   const [url, setUrl] = useState("");
   useEffect(() => { QRCode.toDataURL(text, { width: size, margin: 1 }).then(setUrl).catch(() => {}); }, [text, size]);
@@ -107,12 +140,22 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
+      // Stripe決済完了後の戻りURL(?billing=success / ?billing=cancel)を検知
+      const params = new URLSearchParams(location.search);
+      const billingResult = params.get("billing");
+      if (billingResult) history.replaceState(null, "", location.pathname);
+
       const m = location.pathname.match(/^\/join\/([A-Za-z0-9-]+)/);
       if (m) { setJoinCode(m[1]); setPhase("join"); return; }
       if (store.getSession()) {
         try {
           const d = await api.me();
           setUser(d.user);
+          if (billingResult === "success") {
+            say("お支払いありがとうございます。反映まで数秒かかる場合があります。");
+            setPhase("billing");
+            return;
+          }
           const last = store.getLastTeam();
           if (last) { setTeamId(last); setPhase("team"); return; } // 続きから(前回開いていたチームへ自動で入る)
           setPhase("teams");
@@ -137,10 +180,11 @@ export default function App() {
     onBack={() => setPhase(user ? "teams" : "login")} />;
   if (phase === "teams") return <TeamsScreen user={user} say={say} fail={fail} openTeam={openTeam}
     onJoinByCode={(code) => { setJoinCode(code); setPhase("join"); }} logout={logout}
-    onOpenMyPage={() => setPhase("mypage")} />;
+    onOpenMyPage={() => setPhase("mypage")} onOpenBilling={() => setPhase("billing")} />;
   if (phase === "mypage") return <GlobalMyPageScreen user={user} say={say} fail={fail} onBack={() => setPhase("teams")} />;
+  if (phase === "billing") return <BillingScreen say={say} fail={fail} onBack={() => setPhase("teams")} />;
   return <TeamApp teamId={teamId} user={user} say={say} fail={fail} toast={toast}
-    exitTeam={() => setPhase(user ? "teams" : "login")} logout={logout} />;
+    exitTeam={() => setPhase(user ? "teams" : "login")} logout={logout} openBilling={() => setPhase("billing")} />;
 }
 
 const Splash = () => (
@@ -205,7 +249,7 @@ function AuthScreen({ say, fail, onLoggedIn, onGuestCode }) {
 }
 
 /* ================================ チーム一覧 / 作成 ================================ */
-function TeamsScreen({ user, say, fail, openTeam, onJoinByCode, logout, onOpenMyPage }) {
+function TeamsScreen({ user, say, fail, openTeam, onJoinByCode, logout, onOpenMyPage, onOpenBilling }) {
   const [teams, setTeams] = useState(null);
   const [view, setView] = useState("list"); // list / create / share
   const [created, setCreated] = useState(null);
@@ -214,7 +258,7 @@ function TeamsScreen({ user, say, fail, openTeam, onJoinByCode, logout, onOpenMy
 
   if (view === "create") return (
     <Shell title="チーム作成" onBack={() => setView("list")}>
-      <CreateTeamForm fail={fail} onCreated={(t) => { setCreated(t); setView("share"); say("チームを作成しました"); load(); }} />
+      <CreateTeamForm fail={fail} onOpenBilling={onOpenBilling} onCreated={(t) => { setCreated(t); setView("share"); say("チームを作成しました"); load(); }} />
     </Shell>
   );
   if (view === "share" && created) return (
@@ -225,6 +269,7 @@ function TeamsScreen({ user, say, fail, openTeam, onJoinByCode, logout, onOpenMy
   return (
     <Shell title="チーム一覧" right={
       <div className="flex items-center gap-1">
+        <button onClick={onOpenBilling} className="text-xs font-bold text-violet-200 bg-slate-800 px-2.5 py-1.5 rounded-lg">💳 プラン</button>
         <button onClick={onOpenMyPage} className="text-xs font-bold text-slate-200 bg-slate-800 px-2.5 py-1.5 rounded-lg">🪪 マイページ</button>
         <button onClick={logout} className="text-xs font-bold text-rose-400 px-2 py-1.5">ログアウト</button>
       </div>
@@ -254,6 +299,7 @@ function TeamsScreen({ user, say, fail, openTeam, onJoinByCode, logout, onOpenMy
             </div>
           </Card>
         ))}
+        <AdSection />
         <p className="text-xs text-slate-400 px-1">ログイン中:{user?.name}({user?.email})</p>
       </div>
     </Shell>
@@ -273,18 +319,33 @@ const Shell = ({ title, children, onBack, right }) => (
   </div>
 );
 
-function CreateTeamForm({ fail, onCreated }) {
+function CreateTeamForm({ fail, onOpenBilling, onCreated }) {
   const today = new Date().toISOString().slice(0, 10);
   const [f, setF] = useState({ siteName: "", venueName: "", section: "", date: today, aiEnabled: false });
   const [busy, setBusy] = useState(false);
-  const ok = f.siteName && f.venueName && f.date;
+  const [billing, setBilling] = useState(null);
+  useEffect(() => { api.getBilling().then(setBilling).catch(() => {}); }, []);
+  const canUseAi = billing && ((billing.planType === "subscription" && billing.subscriptionActive) || (billing.planType === "credits" && billing.creditBalance > 0));
+  const quota = billing?.teamQuota;
+  const canCreateFree = !!quota?.freeAvailable;
+  const canCreateWithCredit = !canCreateFree && (billing?.creditBalance || 0) > 0;
+  const canCreate = billing === null || canCreateFree || canCreateWithCredit;
+  const ok = f.siteName && f.venueName && f.date && canCreate;
   const submit = async () => {
     setBusy(true);
-    try { const d = await api.createTeam(f); onCreated({ ...d.team, date: f.date }); } catch (e) { fail(e); }
+    try { const d = await api.createTeam({ ...f, aiEnabled: f.aiEnabled && canUseAi }); onCreated({ ...d.team, date: f.date }); } catch (e) { fail(e); }
     setBusy(false);
   };
   return (
     <Card className="p-4 space-y-3">
+      {billing && !canCreateFree && (
+        <div className={`rounded-lg px-3 py-2.5 text-xs font-bold ${canCreateWithCredit ? "bg-amber-50 text-amber-700 border border-amber-200" : "bg-rose-50 text-rose-700 border border-rose-200"}`}>
+          {canCreateWithCredit
+            ? `月額プランの無料枠(1日${quota.dailyLimit}件・月${quota.monthlyLimit}件)を使い切っているため、このチーム作成でクレジットを1消費します(残り${billing.creditBalance}回)。`
+            : `月額プランの無料枠を使い切っており、クレジット残高もありません。作成するにはクレジット購入が必要です。`}
+          {!canCreateWithCredit && <button onClick={onOpenBilling} className="ml-1 underline">プランを見る →</button>}
+        </div>
+      )}
       <Field label="現場名 *"><input className={inputCls} value={f.siteName} onChange={(e) => setF({ ...f, siteName: e.target.value })} placeholder="例:AAA LIVE 大阪公演" /></Field>
       <Field label="会場名 *"><input className={inputCls} value={f.venueName} onChange={(e) => setF({ ...f, venueName: e.target.value })} placeholder="例:大阪城ホール" /></Field>
       <Field label="セクション名(任意)"><input className={inputCls} value={f.section} onChange={(e) => setF({ ...f, section: e.target.value })} placeholder="例:運営" /></Field>
@@ -292,14 +353,22 @@ function CreateTeamForm({ fail, onCreated }) {
       <div className="flex items-center justify-between bg-violet-50 border border-violet-200 rounded-lg px-3 py-3">
         <div>
           <div className="text-sm font-bold text-violet-800">✨ AI提案を使う</div>
-          <div className="text-xs text-violet-600 mt-0.5">休憩不足の解消などをAIが分析して提案します(あとから設定で切り替え可能)</div>
+          <div className="text-xs text-violet-600 mt-0.5">
+            {canUseAi ? "休憩不足の解消などをAIが分析して提案します(あとから設定で切り替え可能)" : "利用にはプラン契約またはクレジット購入が必要です"}
+          </div>
         </div>
-        <button onClick={() => setF({ ...f, aiEnabled: !f.aiEnabled })}
-          className={`shrink-0 w-12 h-7 rounded-full transition relative ${f.aiEnabled ? "bg-violet-600" : "bg-slate-300"}`}>
-          <span className="absolute top-0.5 w-6 h-6 rounded-full bg-white transition-all" style={{ left: f.aiEnabled ? 22 : 2 }} />
-        </button>
+        {canUseAi ? (
+          <button onClick={() => setF({ ...f, aiEnabled: !f.aiEnabled })}
+            className={`shrink-0 w-12 h-7 rounded-full transition relative ${f.aiEnabled ? "bg-violet-600" : "bg-slate-300"}`}>
+            <span className="absolute top-0.5 w-6 h-6 rounded-full bg-white transition-all" style={{ left: f.aiEnabled ? 22 : 2 }} />
+          </button>
+        ) : (
+          <button onClick={onOpenBilling} className="shrink-0 text-xs font-bold text-violet-700 bg-white border border-violet-300 rounded-lg px-3 py-2">プランを見る</button>
+        )}
       </div>
-      <Btn className="w-full" big disabled={!ok || busy} onClick={submit}>{busy ? "作成中..." : "チームを作成して共有URLを発行"}</Btn>
+      <Btn className="w-full" big disabled={!ok || busy} onClick={submit}>
+        {busy ? "作成中..." : canCreateWithCredit ? "クレジットを1消費して作成する" : !canCreate ? "作成できません(プランが必要です)" : "チームを作成して共有URLを発行"}
+      </Btn>
     </Card>
   );
 }
@@ -380,7 +449,7 @@ function JoinScreen({ code, user, say, fail, onJoined, onBack }) {
 }
 
 /* ================================ チーム内アプリ本体 ================================ */
-function TeamApp({ teamId, user, say, fail, toast, exitTeam, logout }) {
+function TeamApp({ teamId, user, say, fail, toast, exitTeam, logout, openBilling }) {
   const [state, setState] = useState(null);
   const [loadErr, setLoadErr] = useState("");
   const [fatalErr, setFatalErr] = useState(""); // 初回成功後に致命的エラーが続いた場合
@@ -523,7 +592,7 @@ function TeamApp({ teamId, user, say, fail, toast, exitTeam, logout }) {
 
   const screens = {
     cc: <CommandCenter team={team} now={now} kpi={kpi} enriched={enriched} posSummary={posSummary} state={state} setRoute={goto}
-      ai={ai} runAI={runAI} applySuggestion={applySuggestion} onToggleAi={toggleAi}
+      ai={ai} runAI={runAI} applySuggestion={applySuggestion} onToggleAi={toggleAi} openBilling={openBilling}
       onBreakEnd={(pid) => run(() => api.breakEnd(teamId, pid), "勤務に戻しました")} />,
     member: me && <MemberScreen p={me} now={now} team={team} setRoute={goto}
       onBreakStart={() => run(() => api.breakStart(teamId, me.id), "休憩を開始しました")}
@@ -531,11 +600,11 @@ function TeamApp({ teamId, user, say, fail, toast, exitTeam, logout }) {
       onCheckout={() => run(() => api.checkout(teamId, me.id), "退勤を記録しました")} />,
     chat: <ChatScreen state={state} me={state.me} now={now}
       onSend={(text) => run(() => api.sendChat(teamId, text))} />,
-    ai: <AIScreen team={team} ai={ai} runAI={runAI} applySuggestion={applySuggestion} onToggleAi={toggleAi} />,
+    ai: <AIScreen team={team} ai={ai} runAI={runAI} applySuggestion={applySuggestion} onToggleAi={toggleAi} openBilling={openBilling} />,
     dash: <Dashboard team={team} enriched={enriched} isOwner={isOwner} votingClosed={team.votingClosed} setRoute={goto} setModal={setModal}
       onCheckout={(pid, name) => { if (confirm(`${name} を代理退勤させますか?(監査ログに記録)`)) run(() => api.checkout(teamId, pid), "代理退勤を記録しました"); }}
       onToggleRole={(pid) => run(() => api.toggleRole(teamId, pid), "権限を変更しました")}
-      onToggleAi={toggleAi}
+      onToggleAi={toggleAi} openBilling={openBilling}
       onNotifyShorts={(shorts) => run(async () => { for (const p of shorts) await api.sendNotify(teamId, { type: "休憩不足", text: `${p.name}さんの休憩が不足しています(残り${p.remain}分)` }); }, "休憩不足通知を送信しました")}
       onCloseVoting={() => { if (confirm("現場を終了し、ポイント投票を締め切りますか?")) run(() => api.closeVoting(teamId), "投票を締め切りました"); }}
       onDeleteTeam={async () => {
@@ -653,7 +722,7 @@ function TeamApp({ teamId, user, say, fail, toast, exitTeam, logout }) {
 }
 
 /* ================================ Command Center ================================ */
-function CommandCenter({ team, now, kpi, enriched, posSummary, state, setRoute, ai, runAI, applySuggestion, onBreakEnd, onToggleAi }) {
+function CommandCenter({ team, now, kpi, enriched, posSummary, state, setRoute, ai, runAI, applySuggestion, onBreakEnd, onToggleAi, openBilling }) {
   useEffect(() => { if (team.aiEnabled && !ai.list && !ai.loading) runAI(); }, [team.aiEnabled]); // ONの場合のみ初回自動分析
   const shorts = enriched.filter((p) => p.shortage);
   const alerts = [
@@ -733,7 +802,10 @@ function CommandCenter({ team, now, kpi, enriched, posSummary, state, setRoute, 
               <h3 className="text-sm font-bold text-violet-800">✨ AI提案は現在OFFです</h3>
               <p className="text-xs text-violet-600 mt-0.5">休憩不足の解消などをAIが分析して提案します。</p>
             </div>
-            <Btn color="violet" onClick={onToggleAi} className="shrink-0 py-2 text-xs">ONにする</Btn>
+            <div className="shrink-0 flex gap-1.5">
+              <button onClick={openBilling} className="py-2 px-2.5 text-xs font-bold text-violet-700 bg-white border border-violet-300 rounded-lg">プランを見る</button>
+              <Btn color="violet" onClick={onToggleAi} className="py-2 text-xs">ONにする</Btn>
+            </div>
           </div>
         )}
       </Card>
@@ -825,7 +897,7 @@ function CommandCenter({ team, now, kpi, enriched, posSummary, state, setRoute, 
 }
 
 /* ================================ AI提案画面 ================================ */
-function AIScreen({ team, ai, runAI, applySuggestion, onToggleAi }) {
+function AIScreen({ team, ai, runAI, applySuggestion, onToggleAi, openBilling }) {
   return (
     <div className="space-y-3 max-w-md mx-auto">
       <div className="flex items-center justify-between px-1">
@@ -840,7 +912,10 @@ function AIScreen({ team, ai, runAI, applySuggestion, onToggleAi }) {
           <div className="text-sm font-bold text-violet-800">AI提案を{team.aiEnabled ? "ON" : "OFF"}にしています</div>
           <div className="text-xs text-violet-600 mt-0.5">{team.aiEnabled ? "この現場ではAI提案が使えます。" : "OFFの間は分析を行わず、費用も発生しません。"}</div>
         </div>
-        <Btn color={team.aiEnabled ? "slate" : "violet"} onClick={onToggleAi} className="shrink-0 py-2 text-xs">{team.aiEnabled ? "OFFにする" : "ONにする"}</Btn>
+        <div className="shrink-0 flex gap-1.5">
+          <button onClick={openBilling} className="py-2 px-2.5 text-xs font-bold text-violet-700 bg-white border border-violet-300 rounded-lg">プランを見る</button>
+          <Btn color={team.aiEnabled ? "slate" : "violet"} onClick={onToggleAi} className="py-2 text-xs">{team.aiEnabled ? "OFFにする" : "ONにする"}</Btn>
+        </div>
       </Card>
       {!team.aiEnabled && (
         <Card className="p-6 text-center text-sm text-slate-400">AI提案はOFFになっています。上のボタンからONにすると使えます。</Card>
@@ -1009,7 +1084,7 @@ function MemberScreen({ p, now, team, setRoute, onBreakStart, onBreakEnd, onChec
 }
 
 /* ================================ 参加者一覧(詳細) ================================ */
-function Dashboard({ team, enriched, isOwner, votingClosed, setRoute, setModal, onCheckout, onToggleRole, onToggleAi, onNotifyShorts, onCloseVoting, onDeleteTeam }) {
+function Dashboard({ team, enriched, isOwner, votingClosed, setRoute, setModal, onCheckout, onToggleRole, onToggleAi, openBilling, onNotifyShorts, onCloseVoting, onDeleteTeam }) {
   const shorts = enriched.filter((p) => p.shortage);
   return (
     <div className="space-y-3">
@@ -1019,7 +1094,10 @@ function Dashboard({ team, enriched, isOwner, votingClosed, setRoute, setModal, 
           <div className="text-sm font-bold text-slate-700">✨ AI提案</div>
           <div className="text-xs text-slate-500 mt-0.5">現在 {team.aiEnabled ? "ON" : "OFF"} です。{!team.aiEnabled && "OFFの間は分析を行わず費用も発生しません。"}</div>
         </div>
-        <Btn color={team.aiEnabled ? "slate" : "violet"} onClick={onToggleAi} className="shrink-0 py-2 text-xs">{team.aiEnabled ? "OFFにする" : "ONにする"}</Btn>
+        <div className="shrink-0 flex gap-1.5">
+          <button onClick={openBilling} className="py-2 px-2.5 text-xs font-bold text-indigo-600 bg-indigo-50 rounded-lg">プラン</button>
+          <Btn color={team.aiEnabled ? "slate" : "violet"} onClick={onToggleAi} className="py-2 text-xs">{team.aiEnabled ? "OFFにする" : "ONにする"}</Btn>
+        </div>
       </Card>
       {shorts.length > 0 && (
         <Card className="p-3 border-rose-300 bg-rose-50">
@@ -1424,6 +1502,111 @@ function GlobalMyPageScreen({ user, say, fail, onBack }) {
                 </div>
               ))}
             </Card>
+
+            <AdSection />
+          </>
+        )}
+      </div>
+    </Shell>
+  );
+}
+
+/* ================================ プラン・課金 ================================ */
+function BillingScreen({ say, fail, onBack }) {
+  const [billing, setBilling] = useState(null);
+  const [busy, setBusy] = useState("");
+  const load = () => api.getBilling().then(setBilling).catch(fail);
+  useEffect(() => { load(); }, []);
+
+  const subscribe = async () => {
+    setBusy("sub");
+    try { const d = await api.billingCheckout({ type: "subscription" }); location.href = d.url; }
+    catch (e) { fail(e); setBusy(""); }
+  };
+  const buyCredits = async (bundle) => {
+    setBusy(bundle);
+    try { const d = await api.billingCheckout({ type: "credits", bundle }); location.href = d.url; }
+    catch (e) { fail(e); setBusy(""); }
+  };
+  const openPortal = async () => {
+    setBusy("portal");
+    try { const d = await api.billingPortal(); location.href = d.url; }
+    catch (e) { fail(e); setBusy(""); }
+  };
+
+  const isSubscribed = billing?.planType === "subscription" && billing?.subscriptionActive;
+  const BUNDLES = [
+    { key: "10", label: "10回分", price: "¥300", note: "お試しに" },
+    { key: "50", label: "50回分", price: "¥1,200", note: "1回あたり¥24" },
+    { key: "100", label: "100回分", price: "¥2,000", note: "1回あたり¥20・最もお得" },
+  ];
+
+  return (
+    <Shell title="プラン・課金" onBack={onBack}>
+      <div className="space-y-3">
+        {billing === null && <Card className="p-6 text-center text-sm text-slate-400">読み込み中...</Card>}
+        {billing && (
+          <>
+            <Card className="p-4">
+              <div className="text-xs font-bold text-slate-400">現在のプラン</div>
+              <div className="text-lg font-bold mt-0.5">
+                {isSubscribed ? "月額プラン" : billing.planType === "credits" ? `クレジット制(残り ${billing.creditBalance} 回)` : "未契約"}
+              </div>
+              {isSubscribed && (
+                <Btn color="slate" className="w-full mt-3" onClick={openPortal} disabled={busy === "portal"}>
+                  {busy === "portal" ? "処理中..." : "契約内容を管理・解約する"}
+                </Btn>
+              )}
+            </Card>
+
+            {isSubscribed && billing.teamQuota && (
+              <Card className="p-4">
+                <div className="text-sm font-bold text-slate-700 mb-2">📁 チーム作成の無料枠</div>
+                <div className="grid grid-cols-2 gap-2 text-center">
+                  <div className="bg-slate-50 rounded-lg py-2">
+                    <div className="text-xs font-bold text-slate-400">本日</div>
+                    <div className="font-bold tabular-nums">{billing.teamQuota.dayCount} / {billing.teamQuota.dailyLimit}件</div>
+                  </div>
+                  <div className="bg-slate-50 rounded-lg py-2">
+                    <div className="text-xs font-bold text-slate-400">今月</div>
+                    <div className="font-bold tabular-nums">{billing.teamQuota.monthCount} / {billing.teamQuota.monthlyLimit}件</div>
+                  </div>
+                </div>
+                <p className="text-xs text-slate-400 mt-2">無料枠を超えた分のチーム作成は、クレジットを1件につき1消費します。</p>
+              </Card>
+            )}
+
+            <Card className="p-4">
+              <div className="text-sm font-bold text-slate-700 mb-1">✨ 月額プラン</div>
+              <div className="text-2xl font-bold">¥980<span className="text-sm font-normal text-slate-400">/月</span></div>
+              <p className="text-xs text-slate-500 mt-1">チーム作成が1日1件・月15件まで無料になり、AI提案も使い放題になります。枠を超えた分はクレジットを消費します。いつでも解約できます。</p>
+              {!isSubscribed && (
+                <Btn className="w-full mt-3" onClick={subscribe} disabled={!!busy}>{busy === "sub" ? "処理中..." : "月額プランを契約する"}</Btn>
+              )}
+            </Card>
+
+            <Card className="p-4">
+              <div className="text-sm font-bold text-slate-700 mb-2">☕ クレジット(都度払い)</div>
+              <p className="text-xs text-slate-500 mb-3">AI提案1回、または無料枠を超えたチーム作成1件につき1クレジット消費します。有効期限はありません。</p>
+              <div className="space-y-2">
+                {BUNDLES.map((b) => (
+                  <div key={b.key} className="flex items-center justify-between border border-slate-200 rounded-lg px-3 py-2.5">
+                    <div>
+                      <div className="text-sm font-bold">{b.label}</div>
+                      <div className="text-xs text-slate-400">{b.note}</div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold">{b.price}</span>
+                      <Btn color="slate" onClick={() => buyCredits(b.key)} disabled={!!busy} className="py-1.5 text-xs">
+                        {busy === b.key ? "処理中..." : "購入"}
+                      </Btn>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+
+            <p className="text-xs text-slate-400 px-1">お支払いはStripeを通じて安全に処理されます。領収書はStripeから自動送付されます。AI提案の実際のAPI原価は1回あたり1円未満です。</p>
           </>
         )}
       </div>
