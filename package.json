@@ -10,7 +10,8 @@
     "deploy": "vite build && wrangler deploy",
     "db:create": "wrangler d1 create genba-mvp",
     "db:migrate:local": "wrangler d1 migrations apply genba-mvp --local",
-    "db:migrate:remote": "wrangler d1 migrations apply genba-mvp --remote"
+    "db:migrate:remote": "wrangler d1 migrations apply genba-mvp --remote",
+    "docs:all": "node docgen/gen_spec.cjs && node docgen/gen_basic_design.cjs && node docgen/gen_detail_design.cjs && node docgen/gen_screen_design.cjs && node docgen/gen_sitemap.cjs && node docgen/gen_components.cjs && node docgen/gen_coding_rules.cjs && node docgen/gen_api_spec.cjs && node docgen/gen_table_er.cjs && node docgen/gen_system_diagram.cjs && node docgen/gen_service_diagram.cjs && node docgen/gen_quotation.cjs && node docgen/gen_rfp.cjs && node docgen/gen_requirements.cjs && node docgen/gen_release.cjs && node docgen/gen_manual_pptx.cjs"
   },
   "dependencies": {
     "hono": "^4.6.0",
@@ -21,6 +22,8 @@
   "devDependencies": {
     "@tailwindcss/vite": "^4.0.0",
     "@vitejs/plugin-react": "^4.3.4",
+    "docx": "^9.0.0",
+    "pptxgenjs": "^3.12.0",
     "tailwindcss": "^4.0.0",
     "vite": "^6.0.0",
     "wrangler": "^4.0.0"

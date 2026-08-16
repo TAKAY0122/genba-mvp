@@ -81,12 +81,24 @@ const Modal = ({ title, onClose, children }) => (
     <div className="bg-white w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl overflow-y-auto" style={{ maxHeight: "88vh" }} onClick={(e) => e.stopPropagation()}>
       <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 sticky top-0 bg-white">
         <h3 className="font-bold text-slate-800">{title}</h3>
-        <button onClick={onClose} className="w-8 h-8 rounded-full bg-slate-100 text-slate-500 font-bold">✕</button>
+        <button onClick={onClose} aria-label="閉じる" className="w-8 h-8 rounded-full bg-slate-100 text-slate-500 font-bold">✕</button>
       </div>
       <div className="p-4">{children}</div>
     </div>
   </div>
 );
+/* 完了(黒)/エラー(赤)を色で見分けられる通知トースト。全フェーズ共通で App 直下に1つだけ描画する */
+const Toast = ({ toast }) => {
+  if (!toast) return null;
+  const isError = toast.type === "error";
+  return (
+    <div role="status" aria-live="polite"
+      className={`fixed bottom-20 sm:bottom-6 left-1/2 -translate-x-1/2 text-white text-sm font-bold px-4 py-2.5 rounded-full shadow-lg text-center flex items-center gap-1.5 ${isError ? "bg-rose-600" : "bg-slate-900"}`}
+      style={{ zIndex: 60, maxWidth: "90vw" }}>
+      {isError && <span aria-hidden="true">⚠️</span>}{toast.msg}
+    </div>
+  );
+};
 const Field = ({ label, children }) => (
   <div><label className="text-xs font-bold text-slate-500">{label}</label><div className="mt-1">{children}</div></div>
 );
@@ -136,9 +148,18 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [joinCode, setJoinCode] = useState(null);
   const [teamId, setTeamId] = useState(null);
-  const [toast, setToast] = useState("");
-  const say = useCallback((m) => { setToast(m); setTimeout(() => setToast(""), 2800); }, []);
-  const fail = useCallback((e) => say(e.message || "エラーが発生しました。"), [say]);
+  const [toast, setToast] = useState(null); // { msg, type: "ok" | "error" }
+  const toastSeq = useRef(0);
+  const say = useCallback((m) => {
+    const id = ++toastSeq.current;
+    setToast({ msg: m, type: "ok" });
+    setTimeout(() => { if (toastSeq.current === id) setToast(null); }, 2800);
+  }, []);
+  const fail = useCallback((e) => {
+    const id = ++toastSeq.current;
+    setToast({ msg: e.message || "エラーが発生しました。", type: "error" });
+    setTimeout(() => { if (toastSeq.current === id) setToast(null); }, 3800);
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -175,19 +196,25 @@ export default function App() {
   const openTeam = (id) => { store.setLastTeam(id); setTeamId(id); setPhase("team"); };
   const logout = async () => { await api.logout(); store.setSession(null); store.setLastTeam(null); setUser(null); setTeamId(null); setPhase("login"); };
 
-  if (phase === "boot") return <Splash />;
-  if (phase === "login") return <AuthScreen say={say} fail={fail} onLoggedIn={(u) => { setUser(u); setPhase("teams"); }} onGuestCode={(code) => { setJoinCode(code); setPhase("join"); }} />;
-  if (phase === "join") return <JoinScreen code={joinCode} user={user} say={say} fail={fail}
+  let screen;
+  if (phase === "boot") screen = <Splash />;
+  else if (phase === "login") screen = <AuthScreen say={say} fail={fail} onLoggedIn={(u) => { setUser(u); setPhase("teams"); }} onGuestCode={(code) => { setJoinCode(code); setPhase("join"); }} />;
+  else if (phase === "join") screen = <JoinScreen code={joinCode} user={user} say={say} fail={fail}
     onJoined={(tid) => openTeam(tid)}
     onBack={() => setPhase(user ? "teams" : "login")} />;
-  if (phase === "teams") return <TeamsScreen user={user} say={say} fail={fail} openTeam={openTeam}
+  else if (phase === "teams") screen = <TeamsScreen user={user} say={say} fail={fail} openTeam={openTeam}
     onJoinByCode={(code) => { setJoinCode(code); setPhase("join"); }} logout={logout}
     onOpenMyPage={() => setPhase("mypage")} onOpenBilling={() => setPhase("billing")} onOpenAdmin={() => setPhase("admin")} />;
-  if (phase === "admin") return <AdminScreen say={say} fail={fail} onBack={() => setPhase("teams")} />;
-  if (phase === "mypage") return <GlobalMyPageScreen user={user} say={say} fail={fail} onBack={() => setPhase("teams")} />;
-  if (phase === "billing") return <BillingScreen say={say} fail={fail} onBack={() => setPhase("teams")} />;
-  return <TeamApp teamId={teamId} user={user} say={say} fail={fail} toast={toast}
+  else if (phase === "admin") screen = <AdminScreen say={say} fail={fail} onBack={() => setPhase("teams")} />;
+  else if (phase === "mypage") screen = <GlobalMyPageScreen user={user} say={say} fail={fail} onBack={() => setPhase("teams")} />;
+  else if (phase === "billing") screen = <BillingScreen say={say} fail={fail} onBack={() => setPhase("teams")} />;
+  else screen = <TeamApp teamId={teamId} user={user} say={say} fail={fail}
     exitTeam={() => setPhase(user ? "teams" : "login")} logout={logout} openBilling={() => setPhase("billing")} />;
+
+  return <>
+    {screen}
+    <Toast toast={toast} />
+  </>;
 }
 
 const Splash = () => (
@@ -273,17 +300,17 @@ function TeamsScreen({ user, say, fail, openTeam, onJoinByCode, logout, onOpenMy
     <Shell title="チーム一覧" right={
       <div className="flex items-center gap-1 shrink-0">
         {user?.isSiteAdmin && (
-          <button onClick={onOpenAdmin} className="text-xs font-bold text-amber-200 bg-slate-800 px-2 sm:px-2.5 py-1.5 rounded-lg" title="管理ページ">
+          <button onClick={onOpenAdmin} className="text-xs font-bold text-amber-200 bg-slate-800 px-2 sm:px-2.5 py-1.5 rounded-lg" title="管理ページ" aria-label="管理ページ">
             🛠<span className="hidden sm:inline"> 管理</span>
           </button>
         )}
-        <button onClick={onOpenBilling} className="text-xs font-bold text-violet-200 bg-slate-800 px-2 sm:px-2.5 py-1.5 rounded-lg" title="プラン・課金">
+        <button onClick={onOpenBilling} className="text-xs font-bold text-violet-200 bg-slate-800 px-2 sm:px-2.5 py-1.5 rounded-lg" title="プラン・課金" aria-label="プラン・課金">
           💳<span className="hidden sm:inline"> プラン</span>
         </button>
-        <button onClick={onOpenMyPage} className="text-xs font-bold text-slate-200 bg-slate-800 px-2 sm:px-2.5 py-1.5 rounded-lg" title="マイページ">
+        <button onClick={onOpenMyPage} className="text-xs font-bold text-slate-200 bg-slate-800 px-2 sm:px-2.5 py-1.5 rounded-lg" title="マイページ" aria-label="マイページ">
           🪪<span className="hidden sm:inline"> マイページ</span>
         </button>
-        <button onClick={logout} className="text-xs font-bold text-rose-400 px-1.5 sm:px-2 py-1.5" title="ログアウト">
+        <button onClick={logout} className="text-xs font-bold text-rose-400 px-1.5 sm:px-2 py-1.5" title="ログアウト" aria-label="ログアウト">
           <span className="sm:hidden">↩</span><span className="hidden sm:inline">ログアウト</span>
         </button>
       </div>
@@ -324,7 +351,7 @@ const Shell = ({ title, children, onBack, right }) => (
   <div className="min-h-screen bg-slate-100" style={{ fontFamily: "'Hiragino Sans','Noto Sans JP',system-ui,sans-serif" }}>
     <header className="sticky top-0 z-40 bg-slate-900 text-white">
       <div className="max-w-lg mx-auto flex items-center gap-2 px-3 py-3">
-        {onBack && <button onClick={onBack} className="w-9 h-9 rounded-lg bg-slate-800 font-bold shrink-0">←</button>}
+        {onBack && <button onClick={onBack} aria-label="戻る" className="w-9 h-9 rounded-lg bg-slate-800 font-bold shrink-0">←</button>}
         <div className="flex-1 min-w-0 font-bold truncate">{title}</div>
         {right}
       </div>
@@ -463,7 +490,7 @@ function JoinScreen({ code, user, say, fail, onJoined, onBack }) {
 }
 
 /* ================================ チーム内アプリ本体 ================================ */
-function TeamApp({ teamId, user, say, fail, toast, exitTeam, logout, openBilling }) {
+function TeamApp({ teamId, user, say, fail, exitTeam, logout, openBilling }) {
   const [state, setState] = useState(null);
   const [loadErr, setLoadErr] = useState("");
   const [fatalErr, setFatalErr] = useState(""); // 初回成功後に致命的エラーが続いた場合
@@ -502,9 +529,14 @@ function TeamApp({ teamId, user, say, fail, toast, exitTeam, logout, openBilling
     return () => { clearInterval(pollRef.current); clearInterval(clock); };
   }, [refresh]);
 
-  /* API呼び出し共通ラッパ: 実行→即時再取得 */
+  /* API呼び出し共通ラッパ: 実行→即時再取得。busyRefで多重タップ時の二重送信(退勤の二重記録等)を防ぐ */
+  const busyRef = useRef(false);
   const run = async (fn, okMsg) => {
-    try { await fn(); if (okMsg) say(okMsg); await refresh(); } catch (e) { fail(e); await refresh(); }
+    if (busyRef.current) return;
+    busyRef.current = true;
+    try { await fn(); if (okMsg) say(okMsg); await refresh(); }
+    catch (e) { fail(e); await refresh(); }
+    finally { busyRef.current = false; }
   };
 
   const enriched = useMemo(() => {
@@ -648,7 +680,7 @@ function TeamApp({ teamId, user, say, fail, toast, exitTeam, logout, openBilling
     <div className="min-h-screen bg-slate-100 text-slate-900" style={{ fontFamily: "'Hiragino Sans','Noto Sans JP',system-ui,sans-serif" }}>
       <header className="sticky top-0 z-40 bg-slate-900 text-white">
         <div className="max-w-7xl mx-auto flex items-center gap-2 px-3 lg:px-6 py-2.5 lg:py-3.5">
-          <button onClick={() => setMenuOpen(true)} className="lg:hidden w-9 h-9 rounded-lg bg-slate-800 text-lg">☰</button>
+          <button onClick={() => setMenuOpen(true)} aria-label="メニューを開く" className="lg:hidden w-9 h-9 rounded-lg bg-slate-800 text-lg">☰</button>
           <div className="flex-1 min-w-0">
             <div className="text-slate-400 leading-none" style={{ fontSize: 10 }}>現場運営支援システム</div>
             <div className="text-sm font-bold truncate">{team.siteName}</div>
@@ -729,8 +761,6 @@ function TeamApp({ teamId, user, say, fail, toast, exitTeam, logout, openBilling
             else run(() => api.addAssign(teamId, f), "配置を保存しました");
           }} />
       )}
-
-      {toast && <div className="fixed bottom-20 sm:bottom-6 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-sm font-bold px-4 py-2.5 rounded-full shadow-lg text-center" style={{ zIndex: 60, maxWidth: "90vw" }}>{toast}</div>}
     </div>
   );
 }
@@ -1194,7 +1224,7 @@ function EditRecordModal({ p, now, team, onClose, onSave }) {
               <input type="time" className={inputCls} value={b.s} onChange={(e) => setBrs(brs.map((x, j) => (j === i ? { ...x, s: e.target.value } : x)))} />
               <span className="text-slate-400">〜</span>
               <input type="time" className={inputCls} value={b.e} onChange={(e) => setBrs(brs.map((x, j) => (j === i ? { ...x, e: e.target.value } : x)))} />
-              <button onClick={() => setBrs(brs.filter((_, j) => j !== i))} className="text-rose-500 font-bold px-1">✕</button>
+              <button onClick={() => setBrs(brs.filter((_, j) => j !== i))} aria-label={`休憩${i + 1}件目を削除`} className="text-rose-500 font-bold px-1">✕</button>
             </div>
           ))}
           {brs.length === 0 && <p className="text-xs text-slate-400 mt-1">休憩記録はありません。</p>}
