@@ -44,9 +44,16 @@ export const api = {
   // 認証
   register: (b) => call("POST", "/api/v1/register", b),
   login: (b) => call("POST", "/api/v1/login", b),
+  verify2fa: (b) => call("POST", "/api/v1/login/2fa", b),
+  oauthHandoff: (code) => call("POST", "/api/v1/auth/handoff", { code }),
   logout: () => call("POST", "/api/v1/logout", null, store.getSession()).catch(() => {}),
   me: () => call("GET", "/api/v1/me", null, store.getSession()),
   mypage: () => call("GET", "/api/v1/mypage", null, store.getSession()),
+
+  // 2段階認証(TOTP)
+  setup2fa: () => call("POST", "/api/v1/2fa/setup", {}, store.getSession()),
+  verifySetup2fa: (code) => call("POST", "/api/v1/2fa/verify-setup", { code }, store.getSession()),
+  disable2fa: (code) => call("POST", "/api/v1/2fa/disable", { code }, store.getSession()),
 
   // 課金
   getBilling: () => call("GET", "/api/v1/billing", null, store.getSession()),

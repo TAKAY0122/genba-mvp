@@ -42,6 +42,66 @@ async function verifyPassword(password, stored) {
   return diff === 0;
 }
 
+/* ---------------- 2段階認証 (TOTP, RFC 6238) ---------------- */
+const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+function base32Encode(bytes) {
+  let bits = "", output = "";
+  for (const b of bytes) bits += b.toString(2).padStart(8, "0");
+  for (let i = 0; i + 5 <= bits.length; i += 5) output += BASE32_ALPHABET[parseInt(bits.slice(i, i + 5), 2)];
+  const rem = bits.length % 5;
+  if (rem) output += BASE32_ALPHABET[parseInt(bits.slice(-rem).padEnd(5, "0"), 2)];
+  return output;
+}
+function base32Decode(str) {
+  const clean = (str || "").toUpperCase().replace(/[^A-Z2-7]/g, "");
+  let bits = "";
+  for (const c of clean) bits += BASE32_ALPHABET.indexOf(c).toString(2).padStart(5, "0");
+  const bytes = [];
+  for (let i = 0; i + 8 <= bits.length; i += 8) bytes.push(parseInt(bits.slice(i, i + 8), 2));
+  return new Uint8Array(bytes);
+}
+const generateTotpSecret = () => base32Encode(crypto.getRandomValues(new Uint8Array(20)));
+
+/* HOTP(RFC 4226)のカウンタ値からTOTPコードを算出。counterは30秒単位の時刻カウンタ */
+async function totpCodeAt(secretBase32, timeMs, stepSec = 30, digits = 6) {
+  const counter = Math.floor(timeMs / 1000 / stepSec);
+  const counterBuf = new ArrayBuffer(8);
+  new DataView(counterBuf).setUint32(4, counter); // 現実的な日時範囲では上位32bitは常に0
+  const key = await crypto.subtle.importKey("raw", base32Decode(secretBase32), { name: "HMAC", hash: "SHA-1" }, false, ["sign"]);
+  const hmac = new Uint8Array(await crypto.subtle.sign("HMAC", key, counterBuf));
+  const offset = hmac[hmac.length - 1] & 0x0f;
+  const bin = ((hmac[offset] & 0x7f) << 24) | ((hmac[offset + 1] & 0xff) << 16) | ((hmac[offset + 2] & 0xff) << 8) | (hmac[offset + 3] & 0xff);
+  return String(bin % 10 ** digits).padStart(digits, "0");
+}
+/* 端末との時刻ズレを±30秒まで許容して照合する */
+async function verifyTotp(secretBase32, code) {
+  if (!/^\d{6}$/.test(code || "")) return false;
+  const now = Date.now();
+  for (const driftSec of [0, -30, 30]) {
+    if ((await totpCodeAt(secretBase32, now + driftSec * 1000)) === code) return true;
+  }
+  return false;
+}
+const otpauthUri = (secretBase32, email) =>
+  `otpauth://totp/${encodeURIComponent(`現場運営支援システム:${email}`)}?secret=${secretBase32}&issuer=${encodeURIComponent("現場運営支援システム")}&digits=6&period=30`;
+
+/* バックアップコード: 平文はレスポンス時に一度だけ見せ、DBにはハッシュのみ保存する */
+function generateBackupCodes(n = 8) {
+  return Array.from({ length: n }, () =>
+    [...crypto.getRandomValues(new Uint8Array(5))].map((b) => b.toString(16).padStart(2, "0")).join(""));
+}
+/* 入力コードがバックアップコード一覧のいずれかと一致すれば、その1件を消費(削除)して返す */
+async function consumeBackupCode(hashedCodes, inputCode) {
+  const list = JSON.parse(hashedCodes || "[]");
+  for (let i = 0; i < list.length; i++) {
+    if (await verifyPassword((inputCode || "").replace(/[^a-f0-9]/gi, "").toLowerCase(), list[i])) {
+      list.splice(i, 1);
+      return { matched: true, remaining: JSON.stringify(list) };
+    }
+  }
+  return { matched: false, remaining: hashedCodes };
+}
+
 /* ---------------- Stripe連携(SDKを使わずREST APIを直接呼ぶ) ---------------- */
 async function stripeFetch(env, path, params, method = "POST") {
   const body = new URLSearchParams();
@@ -193,7 +253,7 @@ app.use("/api/*", async (c, next) => {
     } else {
       const s = await c.env.DB.prepare("SELECT * FROM sessions WHERE token = ? AND expires_at > ?").bind(token, now()).first();
       if (s) {
-        const u = await c.env.DB.prepare("SELECT id, email, name, total_points, total_work_min, sites_count FROM users WHERE id = ?").bind(s.user_id).first();
+        const u = await c.env.DB.prepare("SELECT id, email, name, total_points, total_work_min, sites_count, avatar_url, totp_enabled FROM users WHERE id = ?").bind(s.user_id).first();
         if (u) c.set("user", u);
       }
     }
@@ -235,6 +295,23 @@ async function awardBadge(env, teamId, participant, badge, reason) {
 }
 
 /* ================================ 認証 ================================ */
+/* ログインセッションを新規発行する(通常ログイン・2FA通過後・Google連携で共通利用) */
+async function createSession(env, userId) {
+  const token = uid("s_") + uid();
+  await env.DB.prepare("INSERT INTO sessions (token, user_id, expires_at) VALUES (?,?,?)")
+    .bind(token, userId, now() + 30 * 24 * 3600 * 1000).run();
+  return token;
+}
+const authUserPayload = (u) => ({ id: u.id, email: u.email, name: u.name, avatarUrl: u.avatar_url || null });
+
+/* 2段階認証保有アカウントの、コード入力待ち状態を発行する(5分間有効) */
+async function createTwoFactorPending(env, userId) {
+  const token = uid("p2fa_") + uid();
+  await env.DB.prepare("INSERT INTO two_factor_pending (token, user_id, attempts, expires_at) VALUES (?,?,0,?)")
+    .bind(token, userId, now() + 5 * 60 * 1000).run();
+  return token;
+}
+
 app.post("/api/v1/register", async (c) => {
   const { email, password, name } = await c.req.json();
   if (!email || !password || !name) return ng(c, "VAL-001", "メールアドレス・パスワード・名前は必須です。");
@@ -244,20 +321,47 @@ app.post("/api/v1/register", async (c) => {
   const id = uid("u_");
   await c.env.DB.prepare("INSERT INTO users (id, email, password_hash, name, created_at) VALUES (?,?,?,?,?)")
     .bind(id, email, await hashPassword(password), name, now()).run();
-  const token = uid("s_") + uid();
-  await c.env.DB.prepare("INSERT INTO sessions (token, user_id, expires_at) VALUES (?,?,?)")
-    .bind(token, id, now() + 30 * 24 * 3600 * 1000).run();
-  return ok(c, { token, user: { id, email, name }, isSiteAdmin: isSiteAdmin(c.env, { email }) });
+  const token = await createSession(c.env, id);
+  return ok(c, { token, user: { id, email, name, avatarUrl: null }, isSiteAdmin: isSiteAdmin(c.env, { email }) });
 });
 
 app.post("/api/v1/login", async (c) => {
   const { email, password } = await c.req.json();
   const u = await c.env.DB.prepare("SELECT * FROM users WHERE email = ?").bind(email || "").first();
   if (!u || !(await verifyPassword(password || "", u.password_hash))) return ng(c, "AUTH-001", "メールアドレスまたはパスワードが違います。", 401);
-  const token = uid("s_") + uid();
-  await c.env.DB.prepare("INSERT INTO sessions (token, user_id, expires_at) VALUES (?,?,?)")
-    .bind(token, u.id, now() + 30 * 24 * 3600 * 1000).run();
-  return ok(c, { token, user: { id: u.id, email: u.email, name: u.name }, isSiteAdmin: isSiteAdmin(c.env, u) });
+  if (u.totp_enabled) {
+    const pendingToken = await createTwoFactorPending(c.env, u.id);
+    return ok(c, { require2fa: true, pendingToken });
+  }
+  const token = await createSession(c.env, u.id);
+  return ok(c, { token, user: authUserPayload(u), isSiteAdmin: isSiteAdmin(c.env, u) });
+});
+
+/* パスワード/Googleログインが2段階認証待ちの状態から、コードを照合して本セッションを発行する */
+app.post("/api/v1/login/2fa", async (c) => {
+  const { pendingToken, code } = await c.req.json();
+  const pending = await c.env.DB.prepare("SELECT * FROM two_factor_pending WHERE token = ? AND expires_at > ?")
+    .bind(pendingToken || "", now()).first();
+  if (!pending) return ng(c, "AUTH-003", "コード入力の有効期限が切れました。もう一度ログインしてください。", 401);
+  if (pending.attempts >= 8) {
+    await c.env.DB.prepare("DELETE FROM two_factor_pending WHERE token = ?").bind(pendingToken).run();
+    return ng(c, "AUTH-004", "試行回数の上限に達しました。もう一度ログインしてください。", 401);
+  }
+  const u = await c.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(pending.user_id).first();
+  let matched = u && (await verifyTotp(u.totp_secret, (code || "").trim()));
+  let newBackupCodes = null;
+  if (!matched && u) {
+    const r = await consumeBackupCode(u.totp_backup_codes, code);
+    if (r.matched) { matched = true; newBackupCodes = r.remaining; }
+  }
+  if (!matched) {
+    await c.env.DB.prepare("UPDATE two_factor_pending SET attempts = attempts + 1 WHERE token = ?").bind(pendingToken).run();
+    return ng(c, "AUTH-001", "コードが正しくありません。", 401);
+  }
+  if (newBackupCodes) await c.env.DB.prepare("UPDATE users SET totp_backup_codes = ? WHERE id = ?").bind(newBackupCodes, u.id).run();
+  await c.env.DB.prepare("DELETE FROM two_factor_pending WHERE token = ?").bind(pendingToken).run();
+  const token = await createSession(c.env, u.id);
+  return ok(c, { token, user: authUserPayload(u), isSiteAdmin: isSiteAdmin(c.env, u) });
 });
 
 app.post("/api/v1/logout", async (c) => {
@@ -271,6 +375,137 @@ app.get("/api/v1/me", async (c) => {
   const u = c.get("user");
   if (!u) return ng(c, "AUTH-001", "未ログインです。", 401);
   return ok(c, { user: u, isSiteAdmin: isSiteAdmin(c.env, u) });
+});
+
+/* ---------------- 2段階認証(TOTP)の設定 ---------------- */
+/* 未確定の秘密鍵を発行してQRコード用URIを返す。verify-setupで確認するまでtotp_enabledはfalseのまま */
+app.post("/api/v1/2fa/setup", async (c) => {
+  const u = c.get("user");
+  if (!u) return ng(c, "AUTH-001", "未ログインです。", 401);
+  const full = await c.env.DB.prepare("SELECT email FROM users WHERE id = ?").bind(u.id).first();
+  const secret = generateTotpSecret();
+  await c.env.DB.prepare("UPDATE users SET totp_secret = ? WHERE id = ?").bind(secret, u.id).run();
+  return ok(c, { secret, otpauthUri: otpauthUri(secret, full.email) });
+});
+
+/* 認証アプリに表示された6桁コードで、setupで発行した秘密鍵を確認して有効化する */
+app.post("/api/v1/2fa/verify-setup", async (c) => {
+  const u = c.get("user");
+  if (!u) return ng(c, "AUTH-001", "未ログインです。", 401);
+  const { code } = await c.req.json();
+  const full = await c.env.DB.prepare("SELECT totp_secret FROM users WHERE id = ?").bind(u.id).first();
+  if (!full?.totp_secret) return ng(c, "DATA-001", "先に2段階認証の設定を開始してください。");
+  if (!(await verifyTotp(full.totp_secret, (code || "").trim()))) return ng(c, "AUTH-001", "コードが正しくありません。", 401);
+  const backupCodes = generateBackupCodes();
+  const hashed = await Promise.all(backupCodes.map((bc) => hashPassword(bc)));
+  await c.env.DB.prepare("UPDATE users SET totp_enabled = 1, totp_backup_codes = ? WHERE id = ?")
+    .bind(JSON.stringify(hashed), u.id).run();
+  return ok(c, { backupCodes });
+});
+
+/* 2段階認証の無効化(現在有効なTOTPコードかバックアップコードの入力を必須とする) */
+app.post("/api/v1/2fa/disable", async (c) => {
+  const u = c.get("user");
+  if (!u) return ng(c, "AUTH-001", "未ログインです。", 401);
+  const { code } = await c.req.json();
+  const full = await c.env.DB.prepare("SELECT totp_secret, totp_backup_codes FROM users WHERE id = ?").bind(u.id).first();
+  let matched = await verifyTotp(full.totp_secret, (code || "").trim());
+  if (!matched) matched = (await consumeBackupCode(full.totp_backup_codes, code)).matched;
+  if (!matched) return ng(c, "AUTH-001", "コードが正しくありません。", 401);
+  await c.env.DB.prepare("UPDATE users SET totp_enabled = 0, totp_secret = NULL, totp_backup_codes = NULL WHERE id = ?").bind(u.id).run();
+  return ok(c, {});
+});
+
+/* ---------------- Googleログイン(サーバー主導のOAuth 2.0 Authorization Codeフロー) ----------------
+   フロントエンドはGoogleのクライアントID/シークレットを一切扱わない(すべてサーバー側で完結する)。
+   未設定時(GOOGLE_CLIENT_ID/SECRET未登録)は/startの時点で案内メッセージ付きでトップに戻す。 */
+const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
+const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
+const GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo";
+const googleRedirectUri = (c) => `${new URL(c.req.url).origin}/api/v1/auth/google/callback`;
+
+app.get("/api/v1/auth/google/start", async (c) => {
+  if (!c.env.GOOGLE_CLIENT_ID) return c.redirect(`/?authError=${encodeURIComponent("Googleログインは現在準備中です。")}`, 302);
+  const state = uid("gst_") + uid();
+  await c.env.DB.prepare("INSERT INTO oauth_state (token, created_at, expires_at) VALUES (?,?,?)")
+    .bind(state, now(), now() + 10 * 60 * 1000).run();
+  const params = new URLSearchParams({
+    client_id: c.env.GOOGLE_CLIENT_ID,
+    redirect_uri: googleRedirectUri(c),
+    response_type: "code",
+    scope: "openid email profile",
+    state,
+    prompt: "select_account",
+  });
+  return c.redirect(`${GOOGLE_AUTH_URL}?${params.toString()}`, 302);
+});
+
+app.get("/api/v1/auth/google/callback", async (c) => {
+  const failRedirect = (msg) => c.redirect(`/?authError=${encodeURIComponent(msg)}`, 302);
+  const code = c.req.query("code");
+  const state = c.req.query("state");
+  if (!code || !state) return failRedirect("Googleログインに失敗しました。");
+  const st = await c.env.DB.prepare("SELECT token FROM oauth_state WHERE token = ? AND expires_at > ?").bind(state, now()).first();
+  if (!st) return failRedirect("ログインの有効期限が切れました。もう一度お試しください。");
+  await c.env.DB.prepare("DELETE FROM oauth_state WHERE token = ?").bind(state).run();
+
+  let profile;
+  try {
+    const tokenRes = await fetch(GOOGLE_TOKEN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        code, client_id: c.env.GOOGLE_CLIENT_ID, client_secret: c.env.GOOGLE_CLIENT_SECRET,
+        redirect_uri: googleRedirectUri(c), grant_type: "authorization_code",
+      }),
+    });
+    const tokenData = await tokenRes.json();
+    if (!tokenRes.ok) throw new Error(tokenData?.error_description || "token exchange failed");
+    const infoRes = await fetch(GOOGLE_USERINFO_URL, { headers: { Authorization: `Bearer ${tokenData.access_token}` } });
+    profile = await infoRes.json();
+    if (!infoRes.ok || !profile?.sub || !profile?.email) throw new Error("userinfo fetch failed");
+  } catch (e) {
+    return failRedirect("Googleログインに失敗しました。時間をおいて再度お試しください。");
+  }
+
+  let u = await c.env.DB.prepare("SELECT * FROM users WHERE google_sub = ?").bind(profile.sub).first();
+  if (!u) {
+    u = await c.env.DB.prepare("SELECT * FROM users WHERE email = ?").bind(profile.email).first();
+    if (u) {
+      // 既存のメール/パスワードアカウントと同じメールアドレス → Google連携として紐付ける
+      await c.env.DB.prepare("UPDATE users SET google_sub = ?, avatar_url = COALESCE(avatar_url, ?) WHERE id = ?")
+        .bind(profile.sub, profile.picture || null, u.id).run();
+    } else {
+      const id = uid("u_");
+      // Google連携のみのアカウントはパスワードログインを使わないため、本人が知り得ないランダム値で埋める
+      await c.env.DB.prepare("INSERT INTO users (id, email, password_hash, name, google_sub, avatar_url, created_at) VALUES (?,?,?,?,?,?,?)")
+        .bind(id, profile.email, await hashPassword(crypto.randomUUID()), profile.name || profile.email, profile.sub, profile.picture || null, now()).run();
+      u = await c.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first();
+    }
+  }
+
+  if (u.totp_enabled) {
+    const pendingToken = await createTwoFactorPending(c.env, u.id);
+    return c.redirect(`/?g2fa=${pendingToken}`, 302);
+  }
+  const token = await createSession(c.env, u.id);
+  const handoff = uid("oh_") + uid();
+  await c.env.DB.prepare("INSERT INTO oauth_handoff (code, session_token, expires_at) VALUES (?,?,?)")
+    .bind(handoff, token, now() + 60 * 1000).run();
+  return c.redirect(`/?oauthHandoff=${handoff}`, 302);
+});
+
+/* Googleコールバック(サーバー間リダイレクト)後、ワンタイムコードを実セッショントークンに引き換える。
+   セッショントークンをブラウザのURL・閲覧履歴・Referrerに直接残さないための仲介ステップ */
+app.post("/api/v1/auth/handoff", async (c) => {
+  const { code } = await c.req.json();
+  const row = await c.env.DB.prepare("SELECT session_token FROM oauth_handoff WHERE code = ? AND expires_at > ?").bind(code || "", now()).first();
+  if (!row) return ng(c, "AUTH-003", "ログイン情報の有効期限が切れました。もう一度お試しください。", 401);
+  await c.env.DB.prepare("DELETE FROM oauth_handoff WHERE code = ?").bind(code).run();
+  const s = await c.env.DB.prepare("SELECT user_id FROM sessions WHERE token = ?").bind(row.session_token).first();
+  if (!s) return ng(c, "AUTH-003", "ログイン情報の有効期限が切れました。もう一度お試しください。", 401);
+  const u = await c.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(s.user_id).first();
+  return ok(c, { token: row.session_token, user: authUserPayload(u), isSiteAdmin: isSiteAdmin(c.env, u) });
 });
 
 /* ================================ チーム ================================ */

@@ -25,3 +25,9 @@ SITE_ADMIN_EMAILS = "ytaka122@ezweb.ne.jp"
 # AI提案を使う場合(任意):
 #   npx wrangler secret put ANTHROPIC_API_KEY
 # 未設定の場合はルールベース提案に自動フォールバックします
+
+# Googleログインを使う場合(任意):
+#   npx wrangler secret put GOOGLE_CLIENT_ID
+#   npx wrangler secret put GOOGLE_CLIENT_SECRET
+# 取得手順は CLAUDE.md の「Googleログインの設定」を参照。
+# 未設定の場合、ログイン画面の「Googleでログイン」は準備中メッセージを表示して安全に失敗します

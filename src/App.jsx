@@ -148,6 +148,7 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [joinCode, setJoinCode] = useState(null);
   const [teamId, setTeamId] = useState(null);
+  const [pendingToken, setPendingToken] = useState(null); // Googleログイン経由で2FAコード入力待ちになった場合のトークン
   const [toast, setToast] = useState(null); // { msg, type: "ok" | "error" }
   const toastSeq = useRef(0);
   const say = useCallback((m) => {
@@ -166,7 +167,25 @@ export default function App() {
       // Stripe決済完了後の戻りURL(?billing=success / ?billing=cancel)を検知
       const params = new URLSearchParams(location.search);
       const billingResult = params.get("billing");
-      if (billingResult) history.replaceState(null, "", location.pathname);
+      // Googleログインのコールバック(サーバー側リダイレクト)からの戻りを検知
+      const oauthHandoffCode = params.get("oauthHandoff");
+      const g2faToken = params.get("g2fa");
+      const authErrorMsg = params.get("authError");
+      if (billingResult || oauthHandoffCode || g2faToken || authErrorMsg) history.replaceState(null, "", location.pathname);
+
+      if (oauthHandoffCode) {
+        try {
+          const d = await api.oauthHandoff(oauthHandoffCode);
+          store.setSession(d.token);
+          setUser({ ...d.user, isSiteAdmin: d.isSiteAdmin });
+          say("Googleアカウントでログインしました");
+          const last = store.getLastTeam();
+          if (last) { setTeamId(last); setPhase("team"); } else setPhase("teams");
+        } catch (e) { fail(e); setPhase("login"); }
+        return;
+      }
+      if (g2faToken) { setPendingToken(g2faToken); setPhase("login"); return; }
+      if (authErrorMsg) { fail({ message: authErrorMsg }); setPhase("login"); return; }
 
       const m = location.pathname.match(/^\/join\/([A-Za-z0-9-]+)/);
       if (m) { setJoinCode(m[1]); setPhase("join"); return; }
@@ -198,7 +217,10 @@ export default function App() {
 
   let screen;
   if (phase === "boot") screen = <Splash />;
-  else if (phase === "login") screen = <AuthScreen say={say} fail={fail} onLoggedIn={(u) => { setUser(u); setPhase("teams"); }} onGuestCode={(code) => { setJoinCode(code); setPhase("join"); }} />;
+  else if (phase === "login") screen = <AuthScreen say={say} fail={fail} initialPendingToken={pendingToken}
+    onLoggedIn={(u, opts) => { setUser(u); setPendingToken(null); setPhase(opts?.justRegistered ? "2fa-prompt" : "teams"); }}
+    onGuestCode={(code) => { setJoinCode(code); setPhase("join"); }} />;
+  else if (phase === "2fa-prompt") screen = <TwoFactorSetupScreen say={say} fail={fail} mode="prompt" onDone={() => setPhase("teams")} />;
   else if (phase === "join") screen = <JoinScreen code={joinCode} user={user} say={say} fail={fail}
     onJoined={(tid) => openTeam(tid)}
     onBack={() => setPhase(user ? "teams" : "login")} />;
@@ -224,18 +246,32 @@ const Splash = () => (
 );
 
 /* ================================ ログイン / 新規登録 ================================ */
-function AuthScreen({ say, fail, onLoggedIn, onGuestCode }) {
+function AuthScreen({ say, fail, onLoggedIn, onGuestCode, initialPendingToken }) {
   const [tab, setTab] = useState("login");
   const [f, setF] = useState({ email: "", password: "", name: "", code: "" });
   const [busy, setBusy] = useState(false);
+  const [pending2fa, setPending2fa] = useState(initialPendingToken || null); // 2FAコード入力待ちのpendingToken
+  const [twoFaCode, setTwoFaCode] = useState("");
+  const finishLogin = (d, msg, justRegistered) => {
+    store.setSession(d.token);
+    say(msg);
+    onLoggedIn({ ...d.user, isSiteAdmin: d.isSiteAdmin }, { justRegistered });
+  };
   const submit = async () => {
     setBusy(true);
     try {
       const d = tab === "login" ? await api.login(f) : await api.register(f);
-      store.setSession(d.token);
-      say(tab === "login" ? "ログインしました" : "アカウントを作成しました");
-      onLoggedIn({ ...d.user, isSiteAdmin: d.isSiteAdmin });
+      if (d.require2fa) { setPending2fa(d.pendingToken); setBusy(false); return; }
+      finishLogin(d, tab === "login" ? "ログインしました" : "アカウントを作成しました", tab === "register");
     } catch (e) { fail(e); }
+    setBusy(false);
+  };
+  const submit2fa = async () => {
+    setBusy(true);
+    try {
+      const d = await api.verify2fa({ pendingToken: pending2fa, code: twoFaCode.trim() });
+      finishLogin(d, "ログインしました", false);
+    } catch (e) { fail(e); setTwoFaCode(""); }
     setBusy(false);
   };
   return (
@@ -247,34 +283,116 @@ function AuthScreen({ say, fail, onLoggedIn, onGuestCode }) {
           <p className="text-xs text-slate-400 mt-1">勤務・休憩・配置・投票をリアルタイムに。</p>
         </div>
         <div className="bg-white rounded-2xl p-5">
-          <div className="flex gap-1 mb-4 bg-slate-100 rounded-lg p-1">
-            {[["login", "ログイン"], ["register", "新規登録"], ["guest", "コード参加"]].map(([k, l]) => (
-              <button key={k} onClick={() => setTab(k)} className={`flex-1 py-2 rounded-md text-xs font-bold ${tab === k ? "bg-white shadow text-indigo-700" : "text-slate-500"}`}>{l}</button>
-            ))}
-          </div>
-          {tab === "guest" ? (
+          {pending2fa ? (
             <div className="space-y-3">
-              <p className="text-xs text-slate-500">QRコードを読み取るか、チームコードを入力して参加します(アカウント不要)。</p>
-              <Field label="チームコード"><input className={inputCls} value={f.code} onChange={(e) => setF({ ...f, code: e.target.value.toUpperCase() })} placeholder="例:A1B2C3D4" /></Field>
-              <Btn className="w-full" disabled={!f.code} onClick={() => onGuestCode(f.code.trim())}>参加画面へ →</Btn>
+              <p className="text-sm font-bold text-slate-800">2段階認証コードを入力してください</p>
+              <p className="text-xs text-slate-500">認証アプリに表示されている6桁のコード、またはバックアップコードを入力してください。</p>
+              <Field label="コード">
+                <input className={`${inputCls} text-center text-lg tracking-widest`} value={twoFaCode} maxLength={10} autoFocus
+                  onChange={(e) => setTwoFaCode(e.target.value.replace(/[^0-9a-z]/gi, ""))}
+                  onKeyDown={(e) => e.key === "Enter" && twoFaCode && submit2fa()} placeholder="123456" />
+              </Field>
+              <Btn className="w-full" big disabled={busy || !twoFaCode} onClick={submit2fa}>{busy ? "確認中..." : "確認してログイン"}</Btn>
+              <button className="w-full text-xs text-slate-400 font-bold py-1" onClick={() => { setPending2fa(null); setTwoFaCode(""); }}>ログインをやり直す</button>
             </div>
           ) : (
-            <div className="space-y-3">
-              {tab === "register" && (
-                <Field label="名前 *"><input className={inputCls} value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="例:山田 太郎" /></Field>
+            <>
+              <div className="flex gap-1 mb-4 bg-slate-100 rounded-lg p-1">
+                {[["login", "ログイン"], ["register", "新規登録"], ["guest", "コード参加"]].map(([k, l]) => (
+                  <button key={k} onClick={() => setTab(k)} className={`flex-1 py-2 rounded-md text-xs font-bold ${tab === k ? "bg-white shadow text-indigo-700" : "text-slate-500"}`}>{l}</button>
+                ))}
+              </div>
+              {tab === "guest" ? (
+                <div className="space-y-3">
+                  <p className="text-xs text-slate-500">QRコードを読み取るか、チームコードを入力して参加します(アカウント不要)。</p>
+                  <Field label="チームコード"><input className={inputCls} value={f.code} onChange={(e) => setF({ ...f, code: e.target.value.toUpperCase() })} placeholder="例:A1B2C3D4" /></Field>
+                  <Btn className="w-full" disabled={!f.code} onClick={() => onGuestCode(f.code.trim())}>参加画面へ →</Btn>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <a href="/api/v1/auth/google/start"
+                    className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl font-bold text-sm border border-slate-300 text-slate-700 hover:bg-slate-50 transition">
+                    <span aria-hidden="true">🇬</span>Googleで{tab === "login" ? "ログイン" : "登録"}
+                  </a>
+                  <div className="flex items-center gap-2 text-xs text-slate-400"><div className="flex-1 h-px bg-slate-200" />または<div className="flex-1 h-px bg-slate-200" /></div>
+                  {tab === "register" && (
+                    <Field label="名前 *"><input className={inputCls} value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="例:山田 太郎" /></Field>
+                  )}
+                  <Field label="メールアドレス *"><input type="email" className={inputCls} value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} /></Field>
+                  <Field label={`パスワード *${tab === "register" ? "(8文字以上)" : ""}`}>
+                    <input type="password" className={inputCls} value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} onKeyDown={(e) => e.key === "Enter" && submit()} />
+                  </Field>
+                  <Btn className="w-full" big disabled={busy || !f.email || !f.password || (tab === "register" && !f.name)} onClick={submit}>
+                    {busy ? "処理中..." : tab === "login" ? "ログイン" : "アカウントを作成"}
+                  </Btn>
+                  {tab === "register" && <p className="text-xs text-slate-400 text-center">登録後、2段階認証(推奨)を設定できます。</p>}
+                </div>
               )}
-              <Field label="メールアドレス *"><input type="email" className={inputCls} value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} /></Field>
-              <Field label={`パスワード *${tab === "register" ? "(8文字以上)" : ""}`}>
-                <input type="password" className={inputCls} value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} onKeyDown={(e) => e.key === "Enter" && submit()} />
-              </Field>
-              <Btn className="w-full" big disabled={busy || !f.email || !f.password || (tab === "register" && !f.name)} onClick={submit}>
-                {busy ? "処理中..." : tab === "login" ? "ログイン" : "アカウントを作成"}
-              </Btn>
-            </div>
+            </>
           )}
         </div>
       </div>
     </div>
+  );
+}
+
+/* ================================ 2段階認証(TOTP)の設定 ================================
+   mode="prompt": 新規登録直後に案内する場合(スキップ可)。mode="manage": マイページから任意に設定する場合 */
+function TwoFactorSetupScreen({ say, fail, mode, onDone, onBack }) {
+  const [step, setStep] = useState("loading"); // loading / qr / backup
+  const [setup, setSetup] = useState(null);
+  const [code, setCode] = useState("");
+  const [backupCodes, setBackupCodes] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    api.setup2fa().then((d) => { setSetup(d); setStep("qr"); }).catch((e) => { fail(e); (onBack || onDone)?.(); });
+  }, []);
+
+  const confirm = async () => {
+    setBusy(true);
+    try {
+      const d = await api.verifySetup2fa(code.trim());
+      setBackupCodes(d.backupCodes);
+      setStep("backup");
+      say("2段階認証を有効にしました");
+    } catch (e) { fail(e); setCode(""); }
+    setBusy(false);
+  };
+
+  return (
+    <Shell title="2段階認証の設定" onBack={step === "backup" ? undefined : onBack}>
+      <Card className="p-5 space-y-4">
+        {step === "loading" && <p className="text-sm text-slate-500 text-center py-6">準備中...</p>}
+        {step === "qr" && setup && (
+          <>
+            <p className="text-sm text-slate-600">Google Authenticator等の認証アプリでQRコードを読み取り、表示された6桁のコードを入力してください。</p>
+            <div className="flex justify-center"><QR text={setup.otpauthUri} size={180} /></div>
+            <details className="text-xs text-slate-500">
+              <summary className="cursor-pointer font-bold">QRコードを読み取れない場合</summary>
+              <p className="mt-1 break-all font-mono bg-slate-50 p-2 rounded">{setup.secret}</p>
+            </details>
+            <Field label="6桁のコード">
+              <input className={`${inputCls} text-center text-lg tracking-widest`} value={code} maxLength={6} autoFocus
+                onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
+                onKeyDown={(e) => e.key === "Enter" && code.length === 6 && confirm()} placeholder="123456" />
+            </Field>
+            <Btn className="w-full" big disabled={busy || code.length !== 6} onClick={confirm}>{busy ? "確認中..." : "有効にする"}</Btn>
+            {mode === "prompt" && <button className="w-full text-xs text-slate-400 font-bold py-1" onClick={onDone}>あとで設定する</button>}
+          </>
+        )}
+        {step === "backup" && backupCodes && (
+          <>
+            <p className="text-sm font-bold text-rose-600">バックアップコードを保存してください</p>
+            <p className="text-xs text-slate-500">認証アプリの端末が使えなくなった場合に、1回だけ使えるコードです。このコードはこの画面でのみ表示され、あとから確認できません。安全な場所に保存してください。</p>
+            <div className="grid grid-cols-2 gap-1.5 font-mono text-sm bg-slate-50 rounded-lg p-3">
+              {backupCodes.map((c) => <div key={c}>{c}</div>)}
+            </div>
+            <Btn className="w-full" big onClick={onDone}>保存しました・完了</Btn>
+          </>
+        )}
+      </Card>
+    </Shell>
   );
 }
 
@@ -1486,9 +1604,31 @@ function VoteResult({ state, enriched, isAdmin, me, onCloseVoting }) {
 /* ================================ マイページ(トップレベル・チーム不要) ================================ */
 function GlobalMyPageScreen({ user, say, fail, onBack }) {
   const [my, setMy] = useState(null);
+  const [totpEnabled, setTotpEnabled] = useState(!!user?.totp_enabled);
+  const [securityView, setSecurityView] = useState(null); // null / "setup" / "disable"
+  const [disableCode, setDisableCode] = useState("");
+  const [disableBusy, setDisableBusy] = useState(false);
   useEffect(() => { api.mypage().then(setMy).catch(fail); }, []);
   const total = my?.user?.total_points ?? 0;
   const nextMilestone = (Math.floor(total / 10) + 1) * 10;
+
+  if (securityView === "setup") return (
+    <TwoFactorSetupScreen say={say} fail={fail} mode="manage" onBack={() => setSecurityView(null)}
+      onDone={() => { setSecurityView(null); setTotpEnabled(true); }} />
+  );
+
+  const disable2fa = async () => {
+    setDisableBusy(true);
+    try {
+      await api.disable2fa(disableCode.trim());
+      setTotpEnabled(false);
+      setSecurityView(null);
+      setDisableCode("");
+      say("2段階認証を無効にしました");
+    } catch (e) { fail(e); setDisableCode(""); }
+    setDisableBusy(false);
+  };
+
   return (
     <Shell title="マイページ" onBack={onBack}>
       <div className="space-y-3">
@@ -1499,6 +1639,33 @@ function GlobalMyPageScreen({ user, say, fail, onBack }) {
             <div className="text-xs text-slate-500">{user?.email}</div>
           </div>
         </Card>
+
+        <Card className="p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-sm font-bold text-slate-700">🔒 2段階認証</div>
+              <div className="text-xs text-slate-500 mt-0.5">{totpEnabled ? "有効になっています" : "認証アプリでログイン時のコード確認を追加できます"}</div>
+            </div>
+            {totpEnabled
+              ? <Btn color="rose" className="shrink-0" onClick={() => setSecurityView("disable")}>無効にする</Btn>
+              : <Btn className="shrink-0" onClick={() => setSecurityView("setup")}>設定する</Btn>}
+          </div>
+        </Card>
+        {securityView === "disable" && (
+          <Modal title="2段階認証を無効にする" onClose={() => { setSecurityView(null); setDisableCode(""); }}>
+            <div className="space-y-3">
+              <p className="text-xs text-slate-500">確認のため、現在の認証アプリのコードかバックアップコードを入力してください。</p>
+              <Field label="コード">
+                <input className={`${inputCls} text-center text-lg tracking-widest`} value={disableCode} autoFocus
+                  onChange={(e) => setDisableCode(e.target.value.replace(/[^0-9a-z]/gi, ""))}
+                  onKeyDown={(e) => e.key === "Enter" && disableCode && disable2fa()} placeholder="123456" />
+              </Field>
+              <Btn color="rose" className="w-full" disabled={disableBusy || !disableCode} onClick={disable2fa}>
+                {disableBusy ? "処理中..." : "2段階認証を無効にする"}
+              </Btn>
+            </div>
+          </Modal>
+        )}
 
         {my === null && <Card className="p-6 text-center text-sm text-slate-400">読み込み中...</Card>}
 

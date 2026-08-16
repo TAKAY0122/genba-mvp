@@ -6,7 +6,10 @@ const path = require("path");
 
 const sections = [];
 sections.push(...makeCover("テーブル定義書・ER図"));
-sections.push(...revisionHistory([["v1.0", "2026年7月", "初版発行(migrations 0001〜0006 時点の全14テーブル)"]]));
+sections.push(...revisionHistory([
+  ["v1.0", "2026年7月", "初版発行(migrations 0001〜0006 時点の全14テーブル)"],
+  ["v1.1", "2026年8月", "migration 0007: usersにgoogle_sub等5列を追加。two_factor_pending / oauth_state / oauth_handoffの3テーブルを追加"],
+]));
 
 sections.push(h1("1. ER図(概略)"));
 sections.push(p("実線は主要な参照関係を示す(FK制約はD1側では一部のみ明示的に定義。アプリケーション側で整合性を担保している箇所を含む)。"));
@@ -57,11 +60,34 @@ tableDef("users", "アカウント情報。課金状態・累計実績を保持�
   ["credits_month_key", "TEXT", "毎月クレジット付与の最終付与年月"],
   ["stripe_customer_id", "TEXT", "Stripe顧客ID"],
   ["created_at", "INTEGER", "作成日時"],
+  ["google_sub", "TEXT UNIQUE(NULL許容)", "Google連携時の一意なユーザーID。連携していないアカウントはNULL"],
+  ["avatar_url", "TEXT", "アイコン画像URL(Googleプロフィール由来)"],
+  ["totp_secret", "TEXT", "2段階認証(TOTP)の秘密鍵(base32)。無効時はNULL"],
+  ["totp_enabled", "INTEGER DEFAULT 0", "2段階認証が有効かどうか"],
+  ["totp_backup_codes", "TEXT", "バックアップコードのハッシュ値をJSON配列で保持(平文は保存しない)"],
 ]);
 
 tableDef("sessions", "アカウントログインセッション(30日間有効)。", [
   ["token", "TEXT PK", "セッショントークン(s_接頭辞)"],
   ["user_id / expires_at", "TEXT / INTEGER", "紐づくユーザーと有効期限"],
+]);
+
+tableDef("two_factor_pending", "パスワード/Googleログインは成功したが2FAコード入力待ちの状態(5分間有効)。", [
+  ["token", "TEXT PK", "コード入力用トークン(p2fa_接頭辞)"],
+  ["user_id", "TEXT", "対象ユーザー"],
+  ["attempts", "INTEGER DEFAULT 0", "コード誤入力回数。8回で失効"],
+  ["expires_at", "INTEGER", "有効期限"],
+]);
+
+tableDef("oauth_state", "GoogleログインのCSRF対策用state(単発使用・10分で失効)。", [
+  ["token", "TEXT PK", "state値。/startで発行し/callbackで検証後に削除"],
+  ["created_at / expires_at", "INTEGER", "発行日時と有効期限"],
+]);
+
+tableDef("oauth_handoff", "Googleコールバック完了後、発行済みセッショントークンをSPAへ安全に引き渡すためのワンタイムコード(60秒・単発で失効)。", [
+  ["code", "TEXT PK", "引換コード(oh_接頭辞)。URLに載せてもセッショントークン自体は露出しない"],
+  ["session_token", "TEXT", "引き換え先の実セッショントークン"],
+  ["expires_at", "INTEGER", "有効期限"],
 ]);
 
 tableDef("teams", "1現場(1チーム)を表す単位。", [

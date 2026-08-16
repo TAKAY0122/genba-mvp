@@ -9,6 +9,7 @@ sections.push(...makeCover("機能一覧書(仕様書)"));
 sections.push(...revisionHistory([
   ["v1.0", "2026年7月", "初版発行(勤務・休憩・配置・投票のMVPに加え、Command Center・AI提案・チャット・課金・広告・管理ページまでを含む現行仕様として記録)"],
   ["v1.1", "2026年8月", "UI/UX改善(全画面共通の完了/エラー通知表示、多重送信防止、アクセシビリティ対応)に伴い非機能要件を更新"],
+  ["v1.2", "2026年8月", "Googleアカウントログイン・2段階認証(TOTP)を追加"],
 ]));
 
 sections.push(h1("1. 本書の目的"));
@@ -75,6 +76,8 @@ sections.push(h1("6. 機能仕様"));
 
 sections.push(h2("6.1 認証・参加"));
 sections.push(bullet("メールアドレス・パスワードによるアカウント登録/ログイン(パスワードは8文字以上、PBKDF2でハッシュ化)"));
+sections.push(bullet("Googleアカウントによるログイン/登録(サーバー主導のOAuth 2.0 Authorization Codeフロー)。同じメールアドレスの既存アカウントがあれば自動的に連携する"));
+sections.push(bullet("2段階認証(TOTP): 認証アプリ(Google Authenticator等)で生成する6桁コードによるログイン時の追加確認。登録直後に設定を案内(スキップ可)し、マイページからいつでも有効化/無効化できる。認証アプリが使えない場合のバックアップコード(1回限り使用、8個発行)にも対応"));
 sections.push(bullet("セッションは30日間有効。次回アクセス時は前回開いていたチームへ自動的に入る"));
 sections.push(bullet("ゲスト参加: QRコード・共有URL・チームコードのいずれかから、アカウント登録なしで参加可能"));
 sections.push(bullet("参加時に表示名・予定勤務開始/終了時刻を入力する"));
@@ -185,6 +188,7 @@ sections.push(bullet("複数日開催イベントへの対応(現状は1チー�
 sections.push(bullet("持ち場テンプレートの保存・再利用"));
 sections.push(bullet("勤務・休憩実績のCSVエクスポート、配置のCSV一括登録"));
 sections.push(bullet("遅刻・休憩未取得の自動プッシュ通知(現状はCommand Center上のアラート表示のみ)"));
+sections.push(bullet("Apple(iCloud)アカウントでのログイン(Sign in with Apple)。Apple Developer Programへの加入後に対応予定"));
 
 const doc = new Document({
   sections: [{ properties: {}, ...headerFooter("現場運営支援システム 機能一覧書(仕様書) v1.0"), children: sections }],

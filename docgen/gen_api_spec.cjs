@@ -6,7 +6,10 @@ const path = require("path");
 
 const sections = [];
 sections.push(...makeCover("API仕様書"));
-sections.push(...revisionHistory([["v1.0", "2026年7月", "初版発行(worker/index.js 全38エンドポイントを記録)"]]));
+sections.push(...revisionHistory([
+  ["v1.0", "2026年7月", "初版発行(worker/index.js 全38エンドポイントを記録)"],
+  ["v1.1", "2026年8月", "Googleログイン(/auth/google/*, /auth/handoff)・2段階認証(/login/2fa, /2fa/*)のエンドポイントとAUTH-003/004エラーコードを追加"],
+]));
 
 sections.push(h1("1. 共通仕様"));
 sections.push(makeTable(
@@ -25,8 +28,10 @@ sections.push(h1("2. エラーコード一覧"));
 sections.push(makeTable(
   [{ text: "コード", width: 2400 }, { text: "意味", width: 8000 }],
   [
-    ["AUTH-001", "未ログイン・認証情報不正"],
+    ["AUTH-001", "未ログイン・認証情報不正(2FAコード不正含む)"],
     ["AUTH-002", "権限不足(ロール・サイト管理者権限等)"],
+    ["AUTH-003", "2FA/Googleログインの一時トークンが期限切れ、または見つからない"],
+    ["AUTH-004", "2FAコードの試行回数上限に達した"],
     ["VAL-001", "入力値不正・必須項目未入力"],
     ["DATA-001", "対象データが見つからない"],
     ["DATA-002", "重複(メールアドレス重複、コード再利用等)"],
@@ -48,10 +53,23 @@ sections.push(new Paragraph({ children: [new PageBreak()] }));
 sections.push(h1("3. 認証・アカウント"));
 ep("POST", "/register", "不要", "アカウント登録。成功時セッショントークンとisSiteAdminを返す",
   '{ email, password, name }', '{ token, user, isSiteAdmin }');
-ep("POST", "/login", "不要", "ログイン");
+ep("POST", "/login", "不要", "ログイン。2FA有効アカウントはセッションを発行せず、require2fa: trueとpendingTokenを返す",
+  '{ email, password }', '{ token, user, isSiteAdmin } または { require2fa: true, pendingToken }');
+ep("POST", "/login/2fa", "不要", "ログイン/Google連携が2FAコード入力待ちの状態から、TOTPコードかバックアップコードで本セッションを発行する(pendingTokenは5分・最大8回試行で失効)",
+  '{ pendingToken, code }', '{ token, user, isSiteAdmin }');
+ep("GET", "/auth/google/start", "不要", "Googleの認可画面へリダイレクトする(302)。GOOGLE_CLIENT_ID未設定時はエラーメッセージ付きでトップへ戻す");
+ep("GET", "/auth/google/callback", "不要", "Googleからのコールバック。ユーザーの特定/新規作成を行い、2FA未設定なら/?oauthHandoff=、2FA設定済みなら/?g2fa=を付けてトップへリダイレクトする(302)");
+ep("POST", "/auth/handoff", "不要", "Googleログイン後のワンタイム引換コードを実セッショントークンに交換する(60秒・単発で失効。セッショントークンをURLに直接載せないための仲介)",
+  '{ code }', '{ token, user, isSiteAdmin }');
 ep("POST", "/logout", "必要", "ログアウト(セッション破棄)");
 ep("GET", "/me", "必要", "自分の情報・サイト管理者フラグ取得");
 ep("GET", "/mypage", "必要", "累計実績・獲得バッジ・過去現場履歴の取得(チーム非依存)");
+ep("POST", "/2fa/setup", "必要", "2段階認証の秘密鍵を新規発行しQRコード用URIを返す(verify-setupで確認するまでtotp_enabledはfalseのまま)",
+  null, '{ secret, otpauthUri }');
+ep("POST", "/2fa/verify-setup", "必要", "setupで発行した秘密鍵を6桁コードで確認し、2段階認証を有効化する。バックアップコード8個をこの時だけ平文で返す",
+  '{ code }', '{ backupCodes: [...] }');
+ep("POST", "/2fa/disable", "必要", "2段階認証を無効化する。現在有効なTOTPコードかバックアップコードの入力を必須とする",
+  '{ code }');
 
 sections.push(h1("4. チーム"));
 ep("POST", "/teams", "必要", "チーム作成。課金判定(1日1件・月15件無料枠、超過はクレジット消費)を行う",
