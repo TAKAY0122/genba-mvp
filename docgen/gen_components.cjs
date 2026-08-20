@@ -9,6 +9,7 @@ sections.push(...makeCover("コンポーネント一覧"));
 sections.push(...revisionHistory([
   ["v1.0", "2026年7月", "初版発行(src/App.jsx 全コンポーネントを記録)"],
   ["v1.1", "2026年8月", "共通Toastコンポーネントを追加(全画面共通の通知表示に統一)"],
+  ["v1.2", "2026年8月", "Googleアカウントログイン・2段階認証(TOTP)対応に伴いTwoFactorSetupScreenを追加"],
 ]));
 
 sections.push(h1("1. 構成方針"));
@@ -37,7 +38,8 @@ sections.push(h1("3. トップレベル画面コンポーネント"));
 sections.push(makeTable(
   [{ text: "コンポーネント", width: 2600 }, { text: "対応画面", width: 7800 }],
   [
-    ["AuthScreen", "ログイン/新規登録/コード参加タブ"],
+    ["AuthScreen", "ログイン/新規登録/コード参加タブ、Googleログインボタン、2段階認証コード入力(pending時)"],
+    ["TwoFactorSetupScreen", "2段階認証の設定・管理(promptモード=登録直後の案内、manageモード=マイページからの管理)"],
     ["TeamsScreen", "チーム一覧"],
     ["CreateTeamForm", "チーム作成フォーム(TeamsScreen内)"],
     ["ShareCard", "QR/URL共有カード"],

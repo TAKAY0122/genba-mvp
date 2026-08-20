@@ -8,6 +8,7 @@ const sections = [];
 sections.push(...makeCover("提案依頼書(RFP)"));
 sections.push(...revisionHistory([
   ["v1.0", "2026年7月", "初版発行。当初のCommand Center中心の全体構想から、勤務・休憩・配置・ポイント投票を核とするMVPスコープへ絞り込んだ確定版として記録"],
+  ["v1.1", "2026年8月", "稼働後の追加スコープとしてGoogleアカウントログイン・2段階認証(TOTP)を4章に追記"],
 ]));
 
 sections.push(h1("1. 本書の目的"));
@@ -42,6 +43,7 @@ sections.push(makeTable(
     ["課金", "サブスク/クレジット、招待コード、ポイント交換", "Should"],
     ["広告", "スポンサー枠・アフィリエイト枠", "Could"],
     ["管理ページ", "サイト全体運営(サイト管理者専用)", "Should"],
+    ["Googleログイン・2段階認証", "稼働後の追加要求。Googleアカウントログイン、TOTPによる2段階認証", "Should"],
   ],
 ));
 

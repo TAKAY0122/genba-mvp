@@ -6,7 +6,10 @@ const path = require("path");
 
 const sections = [];
 sections.push(...makeCover("リリース手順書"));
-sections.push(...revisionHistory([["v1.0", "2026年7月", "初版発行"]]));
+sections.push(...revisionHistory([
+  ["v1.0", "2026年7月", "初版発行"],
+  ["v1.1", "2026年8月", "Googleログイン用シークレット(GOOGLE_CLIENT_ID/SECRET)の設定手順・確認項目を追加"],
+]));
 
 sections.push(h1("1. 前提環境"));
 sections.push(bullet("Node.js、npm がインストールされたPC(Windows/Mac問わず)"));
@@ -47,6 +50,7 @@ sections.push(makeTable(
   ],
 ));
 sections.push(p("設定済みシークレット一覧の確認: npx wrangler secret list"));
+sections.push(p("Googleログインを有効化する場合は GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET をこの方法で設定する(未設定の間はログイン画面の「Googleでログイン」がエラーメッセージを表示するのみで、他機能には影響しない。設定後の再デプロイは不要)。詳細はCLAUDE.mdの「Googleログインの設定」を参照。"));
 
 sections.push(h1("5. ロールバック手順"));
 sections.push(bullet("コードのみの変更は、Gitで直前のコミットに戻し、再度 npm run deploy を実行することで復旧できる"));

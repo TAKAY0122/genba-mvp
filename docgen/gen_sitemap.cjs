@@ -6,13 +6,18 @@ const path = require("path");
 
 const sections = [];
 sections.push(...makeCover("サイトマップ"));
-sections.push(...revisionHistory([["v1.0", "2026年7月", "初版発行"]]));
+sections.push(...revisionHistory([
+  ["v1.0", "2026年7月", "初版発行"],
+  ["v1.1", "2026年8月", "Googleログイン・2段階認証コード入力・2段階認証設定画面のフェーズ遷移を追加"],
+]));
 
 sections.push(h1("1. 画面階層"));
 sections.push(p("本システムはSPA(Single Page Application)であり、フェーズ(phase)という状態遷移でトップレベル画面を切り替え、チームに入った後は route という状態遷移で画面を切り替える。URLは /join/:code のみ意味を持ち、それ以外は状態管理で遷移する。"));
 
 sections.push(h2("1.1 トップレベル(チーム非依存)"));
-sections.push(diagramBox("ログイン / 新規登録", { width: 5600, bold: true }));
+sections.push(diagramBox("ログイン / 新規登録(パスワード or Googleログイン)", { width: 5600, bold: true }));
+sections.push(diagramArrow("2段階認証が有効なアカウントのみ"));
+sections.push(diagramBox("2段階認証コード入力(2fa-prompt)", { width: 5600 }));
 sections.push(diagramArrow());
 sections.push(diagramBox("チーム一覧", { width: 5600, bold: true }));
 sections.push(diagramArrow("＋チーム作成 / コードで参加 / QR"));
@@ -39,7 +44,7 @@ sections.push(makeTable(
     ["ポイント投票(vote)", "全員", "マイ勤務(退勤後)・ナビから"],
     ["ポイント結果(voteResult)", "全員", "投票後、または締切後にナビから"],
     ["通知(notify)", "全員", "ヘッダーの通知アイコンから常時アクセス可"],
-    ["マイページ(mypage)", "全員", "ナビから"],
+    ["マイページ(mypage)", "全員", "ナビから。セキュリティ設定→2段階認証設定・管理画面(manageモード)へ遷移可"],
     ["監査ログ(audit)", "オーナー・管理者", "ナビから"],
   ],
 ));

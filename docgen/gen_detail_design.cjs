@@ -8,6 +8,7 @@ const sections = [];
 sections.push(...makeCover("詳細設計書"));
 sections.push(...revisionHistory([
   ["v1.0", "2026年7月", "初版発行(現行実装 worker/index.js 時点のロジックを記録)"],
+  ["v1.1", "2026年8月", "認証ロジック(2段階認証TOTP・Googleログイン)を7章として追加"],
 ]));
 
 sections.push(h1("1. 本書の位置づけ"));
@@ -71,7 +72,23 @@ sections.push(bullet("6. 提案のうち「配置」「休憩」種別は、対�
 sections.push(h1("6. バッジ付与ロジック(awardBadge)"));
 sections.push(p("付与対象アカウントのbadges(JSON配列)を都度DBから再取得し、未獲得のバッジのみ追加してUPDATEする。同一操作で複数バッジ(例: MVP かつ 初ポイント)が同時に条件を満たす場合でも、逐次再取得することで上書き漏れが起きないようにしている。付与時は通知(バッジ獲得)を自動生成する。"));
 
-sections.push(h1("7. エラーハンドリング方針"));
+sections.push(h1("7. 認証ロジック(2段階認証・Googleログイン)"));
+sections.push(h2("7.1 TOTP(RFC 6238)によるコード照合"));
+sections.push(bullet("秘密鍵(20バイトのランダム値をBase32エンコード)をユーザーごとに発行し、設定完了(verify-setup成功)まではtotp_enabledをfalseのまま保持する"));
+sections.push(bullet("コード照合は現在時刻の30秒カウンタに対し、時計ズレを許容するため前後1ステップ(ドリフト)も許可して比較する(HOTPアルゴリズムをRFC 4226に準拠して実装)"));
+sections.push(bullet("設定完了時にバックアップコードを8個発行し、平文はレスポンス表示のみで保存せず、ハッシュ化した状態でDBに保存する(1回使用ごとに配列から削除)"));
+sections.push(bullet("2段階認証が有効なアカウントは、パスワード/Googleいずれのログインでも本セッションを即時発行せず、two_factor_pendingに5分間有効な仮トークンを発行してコード入力を待つ(POST /api/v1/login/2fa で照合)"));
+sections.push(bullet("コード照合に一定回数失敗した場合はattemptsを加算し、以後の総当たり試行を抑止する"));
+
+sections.push(h2("7.2 Googleログイン(サーバー主導のOAuth 2.0 Authorization Codeフロー)"));
+sections.push(bullet("1. GET /api/v1/auth/google/start: CSRF対策のstateトークンをoauth_state(10分有効・単発使用)に発行し、GoogleのAuthorization Endpointへリダイレクトする"));
+sections.push(bullet("2. GET /api/v1/auth/google/callback: 受け取ったstateをoauth_stateと照合(不一致・期限切れは失敗として扱う)。認可コードをアクセストークンに交換し、ユーザー情報(sub・email・name・picture)を取得する"));
+sections.push(bullet("3. users.google_subが一致するアカウントがあればログイン。なければ同一メールアドレスの既存アカウントに自動連携(google_subを追記)。どちらも無ければ新規作成(パスワードは本人が知り得ないランダム値で埋め、パスワードログインを不可能にする)"));
+sections.push(bullet("4. 2段階認証が有効なアカウントの場合は7.1と同様にtwo_factor_pendingへ遷移する"));
+sections.push(bullet("5. サーバー間リダイレクトで完了するため、発行済みセッショントークンをURLに直接載せず、oauth_handoff(60秒有効・単発使用のワンタイムコード)経由でSPA側に引き渡す(POST /api/v1/auth/google/handoff)"));
+sections.push(bullet("6. GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET未設定の環境では/startの時点で「準備中」メッセージ付きでトップへリダイレクトし、他機能に影響しない"));
+
+sections.push(h1("8. エラーハンドリング方針"));
 sections.push(bullet("全APIは成功時 { success:true, data:{...} }、失敗時 { success:false, errorCode, message } の統一形式で返却する"));
 sections.push(bullet("課金に起因する拒否は HTTPステータス402、権限不足は403、データ不整合は409を用いる"));
 sections.push(bullet("billing・admin系APIはDB例外(マイグレーション未適用等)をtry/catchで捕捉し、「データベースの更新が完了していない可能性があります」という診断的なメッセージを返す(生の例外を露出させない)"));
