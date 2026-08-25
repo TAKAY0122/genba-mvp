@@ -40,7 +40,7 @@ npx wrangler secret put <NAME> # 機密情報(APIキー等)の設定
 
 ## 【重要】ドキュメント同時更新ルール
 
-機能追加・修正を行った際は、影響する開発ドキュメント一式(16種類、`docgen/` 配下の `gen_*.cjs` で生成)も同時に更新すること。手順は `.claude/skills/update-docs/SKILL.md` を参照し、コミット前に必ず実行する。
+機能追加・修正を行った際は、影響する開発ドキュメント一式(16種類、`../docgen_export/` 配下の `gen_*.cjs` で生成、出力先は `../要件書/`)も同時に更新すること。手順は `.claude/skills/update-docs/SKILL.md` を参照し、コミット前に必ず実行する。
 
 表紙の署名は「株式会社Aster Systems 担当: 吉崎 天晴」のみとし、依頼先である **RB事業2課の署名は絶対に入れない**。
 
