@@ -215,6 +215,25 @@ function jstMonthRangeMs(ms) {
   const end = Date.UTC(m === 12 ? y + 1 : y, m === 12 ? 0 : m, 1) - 9 * 3600 * 1000;
   return [start, end];
 }
+function jstDateKey(ms) {
+  const { y, m, day } = jstDateParts(ms);
+  return `${y}-${String(m).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+/* SQLの日次集計結果(疎な配列)を、直近days日分の連続した配列に整形する(欠けている日は0で埋める) */
+function fillDailySeries(rows, days, keyField, valueField) {
+  const map = new Map(rows.map((r) => [r[keyField], r[valueField]]));
+  const labels = [];
+  const values = [];
+  const t = now();
+  for (let i = days - 1; i >= 0; i--) {
+    const key = jstDateKey(t - i * 24 * 3600 * 1000);
+    labels.push(key);
+    values.push(map.get(key) || 0);
+  }
+  return { labels, values };
+}
+/* JST日付(YYYY-MM-DD)でグルーピングするSQL式。created_at(epoch ms)を対象カラム名で受け取る */
+const jstDayGroupExpr = (col) => `strftime('%Y-%m-%d', datetime((${col}/1000)+32400, 'unixepoch'))`;
 
 /* このオーナーのチーム作成状況(本日・当月の件数と、サブスク無料枠が残っているか)を返す。
    削除済みチームも「作成した実績」としてカウントする(削除して無料枠を使い回すのを防ぐため)。
@@ -625,6 +644,32 @@ app.get("/api/v1/teams/:id/state", async (c) => {
     c.env.DB.prepare("SELECT target_id FROM votes WHERE team_id = ? AND voter_id = ?").bind(teamId, me.id).first(),
     c.env.DB.prepare("SELECT COUNT(*) AS n FROM votes WHERE team_id = ?").bind(teamId).first(),
   ]);
+  // 休憩未取得の自動通知: シフト終了が近い(残り60分以内)のに必要休憩が未達の参加者を検出し、
+  // 直近1時間以内に同じ参加者へ自動通知済みでなければ追記する(管理者の閲覧時のみチェックし、書き込み頻度を抑える)
+  if (isAdmin(me)) {
+    const t = now();
+    const HOUR_MS = 3600 * 1000;
+    for (const p of parts.results) {
+      if (p.check_out) continue;
+      if (t < p.plan_start) continue;
+      const planMin = minDiff(p.plan_start, p.plan_end);
+      const req = requiredBreak(planMin);
+      if (req <= 0) continue;
+      const untilEnd = minDiff(t, p.plan_end);
+      if (untilEnd > 60) continue; // シフト終了60分前を切ってから警告する
+      const taken = brks.results.filter((b) => b.participant_id === p.id).reduce((a, b) => a + minDiff(b.start_at, b.end_at ?? t), 0);
+      const remain = req - taken;
+      if (remain <= 0) continue;
+      const dup = await c.env.DB.prepare(
+        "SELECT id FROM notifications WHERE team_id = ? AND target_participant_id = ? AND type = '休憩不足' AND auto = 1 AND created_at >= ? LIMIT 1"
+      ).bind(teamId, p.id, t - HOUR_MS).first();
+      if (dup) continue;
+      await c.env.DB.prepare(
+        "INSERT INTO notifications (team_id, type, text, target_participant_id, auto, created_at) VALUES (?,?,?,?,1,?)"
+      ).bind(teamId, "休憩不足", `【自動】${p.name}さんの休憩取得が不足しています(必要${req}分に対し取得${taken}分、シフト終了まで残り${Math.max(0, untilEnd)}分)。`, p.id, t).run();
+    }
+  }
+
   const readSet = new Set(reads.results.map((r) => r.notification_id));
   return ok(c, {
     team: { id: team.id, code: team.code, siteName: team.site_name, venueName: team.venue_name, section: team.section, date: team.event_date, votingClosed: !!team.voting_closed, aiEnabled: !!team.ai_enabled },
@@ -744,6 +789,60 @@ app.patch("/api/v1/teams/:id/display-badge", async (c) => {
   if (badge !== "" && !badges.includes(badge)) return ng(c, "VAL-001", "獲得していないバッジは表示できません。");
   await c.env.DB.prepare("UPDATE participants SET display_badge = ? WHERE id = ?").bind(badge, me.id).run();
   return ok(c, {});
+});
+
+/* ================================ 持ち場テンプレート ================================
+   配置(持ち場)の構成をアカウント単位で保存し、別のチーム作成時に再利用する。
+   時刻は当日の時計時刻(HH:MM)で保存し、適用時に対象チームのevent_dateへ変換する(フロント側で実施)。
+   ゲスト(アカウント未保有)は保存・閲覧不可。 */
+app.get("/api/v1/templates", async (c) => {
+  const u = c.get("user");
+  if (!u) return ng(c, "AUTH-001", "ログインが必要です。", 401);
+  const { results } = await c.env.DB.prepare(
+    "SELECT t.id, t.name, t.created_at, (SELECT COUNT(*) FROM assignment_template_items i WHERE i.template_id = t.id) AS item_count FROM assignment_templates t WHERE t.owner_user_id = ? ORDER BY t.created_at DESC"
+  ).bind(u.id).all();
+  return ok(c, { templates: results.map((r) => ({ id: r.id, name: r.name, createdAt: r.created_at, itemCount: r.item_count })) });
+});
+
+app.get("/api/v1/templates/:id", async (c) => {
+  const u = c.get("user");
+  if (!u) return ng(c, "AUTH-001", "ログインが必要です。", 401);
+  const t = await c.env.DB.prepare("SELECT * FROM assignment_templates WHERE id = ? AND owner_user_id = ?").bind(c.req.param("id"), u.id).first();
+  if (!t) return ng(c, "DATA-001", "テンプレートが見つかりません。", 404);
+  const { results } = await c.env.DB.prepare("SELECT start_hm, end_hm, name, note FROM assignment_template_items WHERE template_id = ? ORDER BY sort_order").bind(t.id).all();
+  return ok(c, { id: t.id, name: t.name, items: results.map((r) => ({ start: r.start_hm, end: r.end_hm, name: r.name, note: r.note })) });
+});
+
+app.delete("/api/v1/templates/:id", async (c) => {
+  const u = c.get("user");
+  if (!u) return ng(c, "AUTH-001", "ログインが必要です。", 401);
+  const t = await c.env.DB.prepare("SELECT id FROM assignment_templates WHERE id = ? AND owner_user_id = ?").bind(c.req.param("id"), u.id).first();
+  if (!t) return ng(c, "DATA-001", "テンプレートが見つかりません。", 404);
+  await c.env.DB.prepare("DELETE FROM assignment_template_items WHERE template_id = ?").bind(t.id).run();
+  await c.env.DB.prepare("DELETE FROM assignment_templates WHERE id = ?").bind(t.id).run();
+  return ok(c, {});
+});
+
+/* 現在のチームの配置一覧をテンプレートとして保存する(管理者のみ) */
+app.post("/api/v1/teams/:id/templates", async (c) => {
+  const teamId = c.req.param("id");
+  const u = c.get("user");
+  if (!u) return ng(c, "AUTH-001", "ログインが必要です。", 401);
+  const me = await resolveParticipant(c, teamId);
+  if (!isAdmin(me)) return ng(c, "AUTH-002", "テンプレート保存は管理者のみ可能です。", 403);
+  const { name } = await c.req.json();
+  if (!name) return ng(c, "VAL-001", "テンプレート名を入力してください。");
+  const asgs = (await c.env.DB.prepare("SELECT * FROM assignments WHERE team_id = ? ORDER BY start_at").bind(teamId).all()).results;
+  if (asgs.length === 0) return ng(c, "VAL-001", "保存できる配置がありません。先に配置を登録してください。");
+  const templateId = uid("tpl_");
+  await c.env.DB.prepare("INSERT INTO assignment_templates (id, owner_user_id, name, created_at) VALUES (?,?,?,?)")
+    .bind(templateId, u.id, name, now()).run();
+  let order = 0;
+  for (const a of asgs) {
+    await c.env.DB.prepare("INSERT INTO assignment_template_items (template_id, start_hm, end_hm, name, note, sort_order) VALUES (?,?,?,?,?,?)")
+      .bind(templateId, fmtHM(a.start_at), fmtHM(a.end_at), a.name, a.note || "", order++).run();
+  }
+  return ok(c, { id: templateId });
 });
 
 /* ================================ 配置 ================================ */
@@ -1012,10 +1111,24 @@ app.get("/api/v1/admin/overview", async (c) => {
       c.env.DB.prepare("SELECT COALESCE(SUM(amount_yen),0) AS n FROM billing_ledger").first(),
     ]);
     const recent = await c.env.DB.prepare("SELECT * FROM billing_ledger ORDER BY id DESC LIMIT 20").all();
+
+    // 直近30日の日次推移(新規登録者数・チーム作成数・売上)
+    const DAYS = 30;
+    const cutoff = now() - DAYS * 24 * 3600 * 1000;
+    const [userRows, teamRows, revRows] = await Promise.all([
+      c.env.DB.prepare(`SELECT ${jstDayGroupExpr("created_at")} AS d, COUNT(*) AS n FROM users WHERE created_at >= ? GROUP BY d`).bind(cutoff).all(),
+      c.env.DB.prepare(`SELECT ${jstDayGroupExpr("created_at")} AS d, COUNT(*) AS n FROM teams WHERE created_at >= ? GROUP BY d`).bind(cutoff).all(),
+      c.env.DB.prepare(`SELECT ${jstDayGroupExpr("created_at")} AS d, COALESCE(SUM(amount_yen),0) AS n FROM billing_ledger WHERE created_at >= ? GROUP BY d`).bind(cutoff).all(),
+    ]);
+    const newUsers = fillDailySeries(userRows.results, DAYS, "d", "n");
+    const newTeams = fillDailySeries(teamRows.results, DAYS, "d", "n");
+    const revenueDaily = fillDailySeries(revRows.results, DAYS, "d", "n");
+
     return ok(c, {
       userCount: userCount.n, teamCount: teamCount.n, activeSubscriptions: subCount.n,
       outstandingCredits: creditSum.n, totalRevenueYen: revenue.n,
       recentLedger: recent.results.map((r) => ({ id: r.id, kind: r.kind, amountYen: r.amount_yen, detail: r.detail, time: r.created_at })),
+      dailyStats: { labels: newUsers.labels, newUsers: newUsers.values, newTeams: newTeams.values, revenueYen: revenueDaily.values },
     });
   } catch (e) {
     return ng(c, "SYS-001", `管理データの取得に失敗しました。データベースの更新(npm run db:migrate:remote)が完了していない可能性があります。詳細: ${e.message}`, 500);

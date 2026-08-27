@@ -2,6 +2,21 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import QRCode from "qrcode";
 import { api, store } from "./api.js";
 import { SPONSOR_SLOTS, AFFILIATE_SLOTS } from "./ads.js";
+import {
+  Menu, X, Bell, LayoutDashboard, ClipboardCheck, MessageCircle, Sparkles,
+  ClipboardList, BarChart3, MapPin, Vote as VoteIcon, Trophy, IdCard, QrCode,
+  ScrollText, AlertTriangle, RefreshCw, Coffee, Lightbulb, Users, Bot, LogOut,
+  ThumbsUp, Zap, CheckCircle2, HandHeart, Medal, Lock, Gem, Play,
+  Wrench, CreditCard, DoorClosed, Award, History, PartyPopper, Gift,
+  Construction, Ticket, Megaphone, ArrowLeft, Folder, Hourglass,
+} from "lucide-react";
+
+/* ナビ・見出し・ボタンで使うアイコン。絵文字は使わず、この一覧のアウトラインアイコンに統一する */
+const NAV_ICON = {
+  cc: LayoutDashboard, member: ClipboardCheck, chat: MessageCircle, ai: Sparkles,
+  dash: ClipboardList, timeline: BarChart3, assign: MapPin, vote: VoteIcon,
+  voteResult: Trophy, notify: Bell, mypage: IdCard, share: QrCode, audit: ScrollText,
+};
 
 /* =====================================================================
    現場運営支援システム MVP - フロントエンド (API接続版)
@@ -20,6 +35,41 @@ const requiredBreak = (planMin) => (planMin >= 480 ? 60 : planMin >= 360 ? 45 : 
 /* 開催日+HH:MM → epoch ms (JST) */
 const dateT = (dateStr, hhmm) => new Date(`${dateStr}T${hhmm}:00+09:00`).getTime();
 
+/* ---------- CSVユーティリティ ---------- */
+const csvCell = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+function downloadCSV(filename, rows) {
+  const text = "﻿" + rows.map((r) => r.map(csvCell).join(",")).join("\r\n"); // BOM付き(Excelでの文字化け防止)
+  const blob = new Blob([text], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+/* 簡易CSVパーサ(ダブルクォート囲み・カンマ内包に対応。配置一括登録用) */
+function parseCSV(text) {
+  const rows = [];
+  let row = [], cell = "", inQuotes = false;
+  const s = text.replace(/^﻿/, "");
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inQuotes) {
+      if (ch === '"' && s[i + 1] === '"') { cell += '"'; i++; }
+      else if (ch === '"') inQuotes = false;
+      else cell += ch;
+    } else if (ch === '"') inQuotes = true;
+    else if (ch === ",") { row.push(cell); cell = ""; }
+    else if (ch === "\n" || ch === "\r") {
+      if (ch === "\r" && s[i + 1] === "\n") i++;
+      row.push(cell); cell = "";
+      if (row.some((c) => c !== "")) rows.push(row);
+      row = [];
+    } else cell += ch;
+  }
+  if (cell !== "" || row.length) { row.push(cell); rows.push(row); }
+  return rows;
+}
+
 const ROLE_LABEL = { owner: "オーナー", admin: "管理者", member: "メンバー", guest: "ゲスト" };
 const POINT_DAY_PASS_COST = 150;
 const MONTHLY_FREE_CREDITS = 50; // 決済準備中の措置: 毎月全アカウントに自動付与されるクレジット数(表示用。実際の付与はサーバー側で判定)
@@ -29,8 +79,21 @@ const BADGE_INFO = {
   "☕": "休憩マスター(必要休憩を充足)",
   "⚡": "初ポイント獲得",
 };
+/* バッジは絵文字ではなくアイコン+色で表現する(データ上のキーは既存の互換性のため絵文字のまま) */
+const BADGE_ICON = {
+  "🏆": { Icon: Trophy, color: "text-amber-500" },
+  "💎": { Icon: Gem, color: "text-sky-500" },
+  "☕": { Icon: Coffee, color: "text-amber-700" },
+  "⚡": { Icon: Zap, color: "text-violet-500" },
+};
+const BadgeMark = ({ b, className = "w-3.5 h-3.5" }) => {
+  const cfg = BADGE_ICON[b];
+  if (!cfg) return null;
+  const Icon = cfg.Icon;
+  return <Icon className={`${className} ${cfg.color} inline-block align-text-bottom mr-1 shrink-0`} />;
+};
 const POSITION_NAMES = ["入口誘導", "チケット確認", "物販列整理", "関係者受付", "楽屋口確認", "場内巡回"];
-const dName = (p) => (p?.displayBadge ? `${p.displayBadge}${p.name}` : p?.name || "");
+const dName = (p) => p?.name || "";
 
 /* ---------- ステータス ---------- */
 const onBreak = (p) => p.breaks.some((b) => !b.end);
@@ -52,7 +115,7 @@ const Badge = ({ s }) => (
   </span>
 );
 const RoleTag = ({ r }) => {
-  const m = { owner: "bg-violet-100 text-violet-700", admin: "bg-indigo-100 text-indigo-700", member: "bg-slate-100 text-slate-600", guest: "bg-teal-100 text-teal-700" };
+  const m = { owner: "bg-violet-100 text-violet-700", admin: "bg-brand-100 text-brand-700", member: "bg-slate-100 text-slate-600", guest: "bg-teal-100 text-teal-700" };
   return <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${m[r] || ""}`}>{ROLE_LABEL[r] || r}</span>;
 };
 
@@ -60,9 +123,9 @@ const RoleTag = ({ r }) => {
 const Card = ({ children, className = "", onClick }) => (
   <div onClick={onClick} className={`bg-white rounded-xl border border-slate-200 shadow-sm ${className}`}>{children}</div>
 );
-const Btn = ({ children, onClick, color = "indigo", disabled, className = "", big }) => {
+const Btn = ({ children, onClick, color = "brand", disabled, className = "", big }) => {
   const map = {
-    indigo: "bg-indigo-600 hover:bg-indigo-700 text-white",
+    brand: "bg-brand-600 hover:bg-brand-700 text-white",
     emerald: "bg-emerald-600 hover:bg-emerald-700 text-white",
     amber: "bg-amber-500 hover:bg-amber-600 text-white",
     rose: "bg-rose-600 hover:bg-rose-700 text-white",
@@ -81,7 +144,7 @@ const Modal = ({ title, onClose, children }) => (
     <div className="bg-white w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl overflow-y-auto" style={{ maxHeight: "88vh" }} onClick={(e) => e.stopPropagation()}>
       <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 sticky top-0 bg-white">
         <h3 className="font-bold text-slate-800">{title}</h3>
-        <button onClick={onClose} aria-label="閉じる" className="w-8 h-8 rounded-full bg-slate-100 text-slate-500 font-bold">✕</button>
+        <button onClick={onClose} aria-label="閉じる" className="w-8 h-8 rounded-full bg-slate-100 text-slate-500 flex items-center justify-center"><X className="w-4 h-4" /></button>
       </div>
       <div className="p-4">{children}</div>
     </div>
@@ -95,14 +158,14 @@ const Toast = ({ toast }) => {
     <div role="status" aria-live="polite"
       className={`fixed bottom-20 sm:bottom-6 left-1/2 -translate-x-1/2 text-white text-sm font-bold px-4 py-2.5 rounded-full shadow-lg text-center flex items-center gap-1.5 ${isError ? "bg-rose-600" : "bg-slate-900"}`}
       style={{ zIndex: 60, maxWidth: "90vw" }}>
-      {isError && <span aria-hidden="true">⚠️</span>}{toast.msg}
+      {isError && <AlertTriangle className="w-4 h-4 shrink-0" aria-hidden="true" />}{toast.msg}
     </div>
   );
 };
 const Field = ({ label, children }) => (
   <div><label className="text-xs font-bold text-slate-500">{label}</label><div className="mt-1">{children}</div></div>
 );
-const inputCls = "w-full px-3 py-2.5 rounded-lg border border-slate-300 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500";
+const inputCls = "w-full px-3 py-2.5 rounded-lg border border-slate-300 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-brand-500";
 
 /* 広告1件分のカード表示 */
 function AdCard({ ad, badgeColor }) {
@@ -130,7 +193,7 @@ function AdSection() {
   if ((!SPONSOR_SLOTS || SPONSOR_SLOTS.length === 0) && !affiliate) return null;
   return (
     <div className="space-y-2">
-      {(SPONSOR_SLOTS || []).map((ad, i) => <AdCard key={`sp-${i}`} ad={ad} badgeColor="text-indigo-500 border-indigo-300" />)}
+      {(SPONSOR_SLOTS || []).map((ad, i) => <AdCard key={`sp-${i}`} ad={ad} badgeColor="text-brand-500 border-brand-300" />)}
       {affiliate && <AdCard ad={affiliate} badgeColor="text-slate-400 border-slate-300" />}
     </div>
   );
@@ -246,8 +309,18 @@ const Splash = () => (
 );
 
 /* ================================ ログイン / 新規登録 ================================ */
+/* 公式のGoogleロゴマーク(4色のG)。Sign-inボタンでは絵文字ではなくこの正規マークを使う */
+const GoogleMark = () => (
+  <svg width="16" height="16" viewBox="0 0 18 18" aria-hidden="true">
+    <path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.874 2.684-6.615z" />
+    <path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.184l-2.908-2.258c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332C2.438 15.983 5.482 18 9 18z" />
+    <path fill="#FBBC05" d="M3.964 10.707c-.18-.54-.282-1.117-.282-1.707s.102-1.167.282-1.707V4.961H.957C.347 6.175 0 7.55 0 9s.348 2.825.957 4.039l3.007-2.332z" />
+    <path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0 5.482 0 2.438 2.017.957 4.961L3.964 7.293C4.672 5.166 6.656 3.58 9 3.58z" />
+  </svg>
+);
+
 function AuthScreen({ say, fail, onLoggedIn, onGuestCode, initialPendingToken }) {
-  const [tab, setTab] = useState("login");
+  const [tab, setTab] = useState("guest"); // 現場スタッフの多くはアカウント不要の「コード参加」で入るため、これを既定表示にする
   const [f, setF] = useState({ email: "", password: "", name: "", code: "" });
   const [busy, setBusy] = useState(false);
   const [pending2fa, setPending2fa] = useState(initialPendingToken || null); // 2FAコード入力待ちのpendingToken
@@ -275,10 +348,10 @@ function AuthScreen({ say, fail, onLoggedIn, onGuestCode, initialPendingToken })
     setBusy(false);
   };
   return (
-    <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4" style={{ fontFamily: "'Hiragino Sans','Noto Sans JP',system-ui,sans-serif" }}>
+    <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
       <div className="w-full max-w-sm">
         <div className="text-center mb-6">
-          <div className="inline-flex w-14 h-14 rounded-2xl bg-indigo-600 text-white items-center justify-center text-2xl font-bold mb-3">◎</div>
+          <div className="inline-flex w-14 h-14 rounded-2xl bg-brand-600 text-white items-center justify-center text-2xl font-bold mb-3">◎</div>
           <h1 className="text-xl font-bold text-white">現場運営支援システム</h1>
           <p className="text-xs text-slate-400 mt-1">勤務・休憩・配置・投票をリアルタイムに。</p>
         </div>
@@ -295,40 +368,47 @@ function AuthScreen({ say, fail, onLoggedIn, onGuestCode, initialPendingToken })
               <Btn className="w-full" big disabled={busy || !twoFaCode} onClick={submit2fa}>{busy ? "確認中..." : "確認してログイン"}</Btn>
               <button className="w-full text-xs text-slate-400 font-bold py-1" onClick={() => { setPending2fa(null); setTwoFaCode(""); }}>ログインをやり直す</button>
             </div>
+          ) : tab === "guest" ? (
+            /* 参加優先レイアウト: アカウント不要のコード参加を最初の1画面で完結させる(現場の新規参加スタッフが最頻出のため) */
+            <div className="space-y-3">
+              <div className="flex items-center gap-1.5 text-sm font-bold text-slate-800">
+                <QrCode className="w-4 h-4 text-brand-600" />チームコードで参加
+              </div>
+              <p className="text-xs text-slate-500">QRコードを読み取るか、チームコードを入力して参加します(アカウント不要)。</p>
+              <Field label="チームコード">
+                <input className={`${inputCls} text-center text-lg tracking-widest uppercase`} value={f.code}
+                  onChange={(e) => setF({ ...f, code: e.target.value.toUpperCase() })} placeholder="A1B2C3D4"
+                  onKeyDown={(e) => e.key === "Enter" && f.code && onGuestCode(f.code.trim())} />
+              </Field>
+              <Btn className="w-full" big disabled={!f.code} onClick={() => onGuestCode(f.code.trim())}>参加画面へ →</Btn>
+              <div className="flex items-center gap-2 text-xs text-slate-400 pt-1"><div className="flex-1 h-px bg-slate-200" />アカウントをお持ちの方<div className="flex-1 h-px bg-slate-200" /></div>
+              <button className="w-full py-2 text-xs font-bold text-brand-700 hover:underline" onClick={() => setTab("login")}>メール / Googleでログイン</button>
+            </div>
           ) : (
-            <>
-              <div className="flex gap-1 mb-4 bg-slate-100 rounded-lg p-1">
-                {[["login", "ログイン"], ["register", "新規登録"], ["guest", "コード参加"]].map(([k, l]) => (
-                  <button key={k} onClick={() => setTab(k)} className={`flex-1 py-2 rounded-md text-xs font-bold ${tab === k ? "bg-white shadow text-indigo-700" : "text-slate-500"}`}>{l}</button>
+            <div className="space-y-3">
+              <button className="text-xs font-bold text-slate-400 hover:text-slate-600 flex items-center gap-1" onClick={() => setTab("guest")}>← コードで参加する方はこちら</button>
+              <div className="flex gap-1 bg-slate-100 rounded-lg p-1">
+                {[["login", "ログイン"], ["register", "新規登録"]].map(([k, l]) => (
+                  <button key={k} onClick={() => setTab(k)} className={`flex-1 py-2 rounded-md text-xs font-bold ${tab === k ? "bg-white shadow text-brand-700" : "text-slate-500"}`}>{l}</button>
                 ))}
               </div>
-              {tab === "guest" ? (
-                <div className="space-y-3">
-                  <p className="text-xs text-slate-500">QRコードを読み取るか、チームコードを入力して参加します(アカウント不要)。</p>
-                  <Field label="チームコード"><input className={inputCls} value={f.code} onChange={(e) => setF({ ...f, code: e.target.value.toUpperCase() })} placeholder="例:A1B2C3D4" /></Field>
-                  <Btn className="w-full" disabled={!f.code} onClick={() => onGuestCode(f.code.trim())}>参加画面へ →</Btn>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  <a href="/api/v1/auth/google/start"
-                    className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl font-bold text-sm border border-slate-300 text-slate-700 hover:bg-slate-50 transition">
-                    <span aria-hidden="true">🇬</span>Googleで{tab === "login" ? "ログイン" : "登録"}
-                  </a>
-                  <div className="flex items-center gap-2 text-xs text-slate-400"><div className="flex-1 h-px bg-slate-200" />または<div className="flex-1 h-px bg-slate-200" /></div>
-                  {tab === "register" && (
-                    <Field label="名前 *"><input className={inputCls} value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="例:山田 太郎" /></Field>
-                  )}
-                  <Field label="メールアドレス *"><input type="email" className={inputCls} value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} /></Field>
-                  <Field label={`パスワード *${tab === "register" ? "(8文字以上)" : ""}`}>
-                    <input type="password" className={inputCls} value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} onKeyDown={(e) => e.key === "Enter" && submit()} />
-                  </Field>
-                  <Btn className="w-full" big disabled={busy || !f.email || !f.password || (tab === "register" && !f.name)} onClick={submit}>
-                    {busy ? "処理中..." : tab === "login" ? "ログイン" : "アカウントを作成"}
-                  </Btn>
-                  {tab === "register" && <p className="text-xs text-slate-400 text-center">登録後、2段階認証(推奨)を設定できます。</p>}
-                </div>
+              <a href="/api/v1/auth/google/start"
+                className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl font-bold text-sm border border-slate-300 text-slate-700 hover:bg-slate-50 transition">
+                <GoogleMark />Googleで{tab === "login" ? "ログイン" : "登録"}
+              </a>
+              <div className="flex items-center gap-2 text-xs text-slate-400"><div className="flex-1 h-px bg-slate-200" />または<div className="flex-1 h-px bg-slate-200" /></div>
+              {tab === "register" && (
+                <Field label="名前 *"><input className={inputCls} value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="例:山田 太郎" /></Field>
               )}
-            </>
+              <Field label="メールアドレス *"><input type="email" className={inputCls} value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} /></Field>
+              <Field label={`パスワード *${tab === "register" ? "(8文字以上)" : ""}`}>
+                <input type="password" className={inputCls} value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} onKeyDown={(e) => e.key === "Enter" && submit()} />
+              </Field>
+              <Btn className="w-full" big disabled={busy || !f.email || !f.password || (tab === "register" && !f.name)} onClick={submit}>
+                {busy ? "処理中..." : tab === "login" ? "ログイン" : "アカウントを作成"}
+              </Btn>
+              {tab === "register" && <p className="text-xs text-slate-400 text-center">登録後、2段階認証(推奨)を設定できます。</p>}
+            </div>
           )}
         </div>
       </div>
@@ -418,18 +498,18 @@ function TeamsScreen({ user, say, fail, openTeam, onJoinByCode, logout, onOpenMy
     <Shell title="チーム一覧" right={
       <div className="flex items-center gap-1 shrink-0">
         {user?.isSiteAdmin && (
-          <button onClick={onOpenAdmin} className="text-xs font-bold text-amber-200 bg-slate-800 px-2 sm:px-2.5 py-1.5 rounded-lg" title="管理ページ" aria-label="管理ページ">
-            🛠<span className="hidden sm:inline"> 管理</span>
+          <button onClick={onOpenAdmin} className="text-xs font-bold text-amber-200 bg-slate-800 px-2 sm:px-2.5 py-1.5 rounded-lg flex items-center gap-1" title="管理ページ" aria-label="管理ページ">
+            <Wrench className="w-4 h-4" /><span className="hidden sm:inline">管理</span>
           </button>
         )}
-        <button onClick={onOpenBilling} className="text-xs font-bold text-violet-200 bg-slate-800 px-2 sm:px-2.5 py-1.5 rounded-lg" title="プラン・課金" aria-label="プラン・課金">
-          💳<span className="hidden sm:inline"> プラン</span>
+        <button onClick={onOpenBilling} className="text-xs font-bold text-violet-200 bg-slate-800 px-2 sm:px-2.5 py-1.5 rounded-lg flex items-center gap-1" title="プラン・課金" aria-label="プラン・課金">
+          <CreditCard className="w-4 h-4" /><span className="hidden sm:inline">プラン</span>
         </button>
-        <button onClick={onOpenMyPage} className="text-xs font-bold text-slate-200 bg-slate-800 px-2 sm:px-2.5 py-1.5 rounded-lg" title="マイページ" aria-label="マイページ">
-          🪪<span className="hidden sm:inline"> マイページ</span>
+        <button onClick={onOpenMyPage} className="text-xs font-bold text-slate-200 bg-slate-800 px-2 sm:px-2.5 py-1.5 rounded-lg flex items-center gap-1" title="マイページ" aria-label="マイページ">
+          <IdCard className="w-4 h-4" /><span className="hidden sm:inline">マイページ</span>
         </button>
-        <button onClick={logout} className="text-xs font-bold text-rose-400 px-1.5 sm:px-2 py-1.5" title="ログアウト" aria-label="ログアウト">
-          <span className="sm:hidden">↩</span><span className="hidden sm:inline">ログアウト</span>
+        <button onClick={logout} className="text-xs font-bold text-rose-400 px-1.5 sm:px-2 py-1.5 flex items-center" title="ログアウト" aria-label="ログアウト">
+          <LogOut className="w-4 h-4 sm:hidden" /><span className="hidden sm:inline">ログアウト</span>
         </button>
       </div>
     }>
@@ -466,10 +546,10 @@ function TeamsScreen({ user, say, fail, openTeam, onJoinByCode, logout, onOpenMy
 }
 
 const Shell = ({ title, children, onBack, right }) => (
-  <div className="min-h-screen bg-slate-100" style={{ fontFamily: "'Hiragino Sans','Noto Sans JP',system-ui,sans-serif" }}>
+  <div className="min-h-screen bg-slate-100">
     <header className="sticky top-0 z-40 bg-slate-900 text-white">
       <div className="max-w-lg mx-auto flex items-center gap-2 px-3 py-3">
-        {onBack && <button onClick={onBack} aria-label="戻る" className="w-9 h-9 rounded-lg bg-slate-800 font-bold shrink-0">←</button>}
+        {onBack && <button onClick={onBack} aria-label="戻る" className="w-9 h-9 rounded-lg bg-slate-800 font-bold shrink-0 flex items-center justify-center"><ArrowLeft className="w-4 h-4" /></button>}
         <div className="flex-1 min-w-0 font-bold truncate">{title}</div>
         {right}
       </div>
@@ -511,7 +591,7 @@ function CreateTeamForm({ fail, onOpenBilling, onCreated }) {
       <Field label="開催日 *"><input type="date" className={inputCls} value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} /></Field>
       <div className="flex items-center justify-between bg-violet-50 border border-violet-200 rounded-lg px-3 py-3">
         <div>
-          <div className="text-sm font-bold text-violet-800">✨ AI提案を使う</div>
+          <div className="text-sm font-bold text-violet-800 flex items-center gap-1.5"><Sparkles className="w-4 h-4" />AI提案を使う</div>
           <div className="text-xs text-violet-600 mt-0.5">
             {canUseAi ? "休憩不足の解消などをAIが分析して提案します(あとから設定で切り替え可能)" : "利用にはプラン契約またはクレジット購入が必要です"}
           </div>
@@ -594,9 +674,9 @@ function JoinScreen({ code, user, say, fail, onJoined, onBack }) {
               <Field label="予定勤務開始 *"><input type="time" className={inputCls} value={start} onChange={(e) => setStart(e.target.value)} /></Field>
               <Field label="予定勤務終了 *"><input type="time" className={inputCls} value={end} onChange={(e) => setEnd(e.target.value)} /></Field>
             </div>
-            <div className="bg-indigo-50 rounded-lg px-3 py-2 text-xs text-indigo-800">
+            <div className="bg-brand-50 rounded-lg px-3 py-2 text-xs text-brand-800">
               予定勤務 <b>{fmtMin(planMin)}</b> → 必要休憩 <b>{req}分</b>
-              <div className="mt-0.5 text-indigo-500" style={{ fontSize: 10 }}>予定開始時刻になると自動的に「勤務中」になります。</div>
+              <div className="mt-0.5 text-brand-500" style={{ fontSize: 10 }}>予定開始時刻になると自動的に「勤務中」になります。</div>
             </div>
             {!user && <p className="text-xs text-teal-700 font-bold">ゲストとして参加します(アカウント不要)。ポイント累計を残したい場合は先にアカウント登録してください。</p>}
             <Btn className="w-full" big disabled={!name || busy || planMin <= 0} onClick={submit}>{busy ? "参加中..." : "参加する"}</Btn>
@@ -678,7 +758,7 @@ function TeamApp({ teamId, user, say, fail, exitTeam, logout, openBilling }) {
   if (fatalErr) return (
     <Shell title="アクセスできません">
       <Card className="p-6 text-center space-y-3">
-        <div className="text-3xl">🚪</div>
+        <DoorClosed className="w-8 h-8 mx-auto text-slate-400" />
         <p className="text-sm text-rose-600 font-bold">{fatalErr}</p>
         <p className="text-xs text-slate-500">チームが削除されたか、参加者情報が確認できなくなりました。</p>
         <Btn className="w-full" onClick={exitTeam}>チーム一覧に戻る</Btn>
@@ -736,19 +816,19 @@ function TeamApp({ teamId, user, say, fail, exitTeam, logout, openBilling }) {
   const loadAudit = async () => { try { const d = await api.auditLogs(teamId); setAuditLogs(d.logs); } catch (e) { fail(e); } };
 
   const NAV = [
-    ...(isAdmin ? [{ id: "cc", label: "Command Center", icon: "◎" }] : []),
-    { id: "member", label: "マイ勤務", icon: "🙋" },
-    { id: "chat", label: "チャット", icon: "💬" },
-    ...(isAdmin ? [{ id: "ai", label: "AI提案", icon: "✨" }] : []),
-    ...(isAdmin ? [{ id: "dash", label: "参加者一覧(詳細)", icon: "📋" }] : []),
-    { id: "timeline", label: "タイムライン", icon: "📊" },
-    ...(isAdmin ? [{ id: "assign", label: "配置管理", icon: "📍" }] : []),
-    { id: "vote", label: "ポイント投票", icon: "🗳" },
-    { id: "voteResult", label: "ポイント結果", icon: "🏆" },
-    { id: "notify", label: "通知", icon: "🔔" },
-    { id: "mypage", label: "マイページ・バッジ", icon: "🪪" },
-    ...(isAdmin ? [{ id: "share", label: "QR/URLで招待", icon: "📱" }] : []),
-    ...(isAdmin ? [{ id: "audit", label: "監査ログ", icon: "📜" }] : []),
+    ...(isAdmin ? [{ id: "cc", label: "Command Center" }] : []),
+    { id: "member", label: "マイ勤務" },
+    { id: "chat", label: "チャット" },
+    ...(isAdmin ? [{ id: "ai", label: "AI提案" }] : []),
+    ...(isAdmin ? [{ id: "dash", label: "参加者一覧(詳細)" }] : []),
+    { id: "timeline", label: "タイムライン" },
+    ...(isAdmin ? [{ id: "assign", label: "配置管理" }] : []),
+    { id: "vote", label: "ポイント投票" },
+    { id: "voteResult", label: "ポイント結果" },
+    { id: "notify", label: "通知" },
+    { id: "mypage", label: "マイページ・バッジ" },
+    ...(isAdmin ? [{ id: "share", label: "QR/URLで招待" }] : []),
+    ...(isAdmin ? [{ id: "audit", label: "監査ログ" }] : []),
   ];
   const BOTTOM = isAdmin ? ["cc", "member", "assign", "chat"] : ["member", "timeline", "chat", "vote"];
 
@@ -777,8 +857,12 @@ function TeamApp({ teamId, user, say, fail, exitTeam, logout, openBilling }) {
         try { await api.deleteTeam(teamId); say("チームを削除しました"); } catch (e) { fail(e); }
         exitTeam();
       }} />,
-    assign: <AssignScreen enriched={enriched} now={now} setModal={setModal}
-      onDelete={(aid) => { if (confirm("この配置を削除しますか?")) run(() => api.delAssign(teamId, aid), "配置を削除しました"); }} />,
+    assign: <AssignScreen enriched={enriched} now={now} setModal={setModal} hasAssignments={state.assignments.length > 0}
+      onDelete={(aid) => { if (confirm("この配置を削除しますか?")) run(() => api.delAssign(teamId, aid), "配置を削除しました"); }}
+      onSaveTemplate={() => {
+        const tplName = prompt("テンプレート名を入力してください(例:入場ゲート×5)");
+        if (tplName) run(() => api.saveTemplate(teamId, tplName), "テンプレートとして保存しました");
+      }} />,
     timeline: <Timeline enriched={enriched} now={now} team={team} />,
     vote: <Vote me={state.me} enriched={enriched} voting={state.voting} setRoute={goto}
       onVote={(target) => run(() => api.vote(teamId, target), "投票しました(1人1回)").then(() => goto("voteResult"))} />,
@@ -795,16 +879,17 @@ function TeamApp({ teamId, user, say, fail, exitTeam, logout, openBilling }) {
   };
 
   return (
-    <div className="min-h-screen bg-slate-100 text-slate-900" style={{ fontFamily: "'Hiragino Sans','Noto Sans JP',system-ui,sans-serif" }}>
+    <div className="min-h-screen bg-slate-100 text-slate-900">
       <header className="sticky top-0 z-40 bg-slate-900 text-white">
         <div className="max-w-7xl mx-auto flex items-center gap-2 px-3 lg:px-6 py-2.5 lg:py-3.5">
-          <button onClick={() => setMenuOpen(true)} aria-label="メニューを開く" className="lg:hidden w-9 h-9 rounded-lg bg-slate-800 text-lg">☰</button>
+          <button onClick={() => setMenuOpen(true)} aria-label="メニューを開く" className="lg:hidden w-9 h-9 rounded-lg bg-slate-800 flex items-center justify-center"><Menu className="w-5 h-5" /></button>
           <div className="flex-1 min-w-0">
             <div className="text-slate-400 leading-none" style={{ fontSize: 10 }}>現場運営支援システム</div>
             <div className="text-sm font-bold truncate">{team.siteName}</div>
           </div>
           <div className="text-lg font-mono font-bold tabular-nums">{fmtHM(now)}</div>
-          <button onClick={() => goto("notify")} className="relative w-9 h-9 rounded-lg bg-slate-800">🔔
+          <button onClick={() => goto("notify")} aria-label="通知" className="relative w-9 h-9 rounded-lg bg-slate-800 flex items-center justify-center">
+            <Bell className="w-5 h-5" />
             {unread > 0 && <span className="absolute -top-1 -right-1 bg-rose-500 text-white font-bold rounded-full flex items-center justify-center" style={{ fontSize: 10, minWidth: 17, height: 17 }}>{unread}</span>}
           </button>
         </div>
@@ -814,16 +899,19 @@ function TeamApp({ teamId, user, say, fail, exitTeam, logout, openBilling }) {
         <nav className="hidden lg:block w-64 shrink-0 py-4 pl-4">
           <div className="bg-white rounded-xl border border-slate-200 p-2.5 sticky top-16">
             <div className="px-3 py-2.5 mb-1 border-b border-slate-100">
-              <div className="text-base font-bold">{dName(me)}</div>
+              <div className="text-base font-bold"><BadgeMark b={me?.displayBadge} />{dName(me)}</div>
               <RoleTag r={state.me.role} />
             </div>
-            {NAV.map((n) => (
-              <button key={n.id} onClick={() => goto(n.id)}
-                className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-bold mb-0.5 ${route === n.id ? "bg-indigo-600 text-white" : "text-slate-600 hover:bg-slate-100"}`}>
-                <span className="w-5 text-center text-base">{n.icon}</span>{n.label}
-              </button>
-            ))}
-            <button onClick={exitTeam} className="w-full px-3 py-2.5 rounded-lg text-sm font-bold text-slate-500 hover:bg-slate-100 text-left">↩ チーム一覧へ</button>
+            {NAV.map((n) => {
+              const Icon = NAV_ICON[n.id];
+              return (
+                <button key={n.id} onClick={() => goto(n.id)}
+                  className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-bold mb-0.5 ${route === n.id ? "bg-brand-600 text-white" : "text-slate-600 hover:bg-slate-100"}`}>
+                  <Icon className="w-4.5 h-4.5 shrink-0" />{n.label}
+                </button>
+              );
+            })}
+            <button onClick={exitTeam} className="w-full px-3 py-2.5 rounded-lg text-sm font-bold text-slate-500 hover:bg-slate-100 text-left">チーム一覧へ</button>
             {user && <button onClick={logout} className="w-full px-3 py-2.5 rounded-lg text-sm font-bold text-rose-600 hover:bg-rose-50 text-left">ログアウト</button>}
           </div>
         </nav>
@@ -834,14 +922,15 @@ function TeamApp({ teamId, user, say, fail, exitTeam, logout, openBilling }) {
         {BOTTOM.map((id) => {
           const n = NAV.find((x) => x.id === id);
           if (!n) return null;
+          const Icon = NAV_ICON[id];
           return (
-            <button key={id} onClick={() => goto(id)} className={`flex-1 py-2 flex flex-col items-center gap-0.5 font-bold ${route === id ? "text-indigo-600" : "text-slate-400"}`} style={{ fontSize: 10 }}>
-              <span className="text-lg leading-none">{n.icon}</span>{n.label.replace("管理", "").replace("ポイント", "").replace("Command Center", "現場")}
+            <button key={id} onClick={() => goto(id)} className={`flex-1 py-2 flex flex-col items-center gap-0.5 font-bold ${route === id ? "text-brand-600" : "text-slate-400"}`} style={{ fontSize: 10 }}>
+              <Icon className="w-5 h-5" />{n.label.replace("管理", "").replace("ポイント", "").replace("Command Center", "現場")}
             </button>
           );
         })}
         <button onClick={() => setMenuOpen(true)} className="flex-1 py-2 flex flex-col items-center gap-0.5 font-bold text-slate-400" style={{ fontSize: 10 }}>
-          <span className="text-lg leading-none">☰</span>メニュー
+          <Menu className="w-5 h-5" />メニュー
         </button>
       </nav>
 
@@ -849,19 +938,22 @@ function TeamApp({ teamId, user, say, fail, exitTeam, logout, openBilling }) {
         <div className="fixed inset-0 z-50 bg-slate-900/50" onClick={() => setMenuOpen(false)}>
           <div className="w-72 h-full bg-white p-4 overflow-y-auto" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center gap-2 pb-3 mb-2 border-b border-slate-100">
-              <span className="w-10 h-10 rounded-full bg-indigo-600 text-white flex items-center justify-center font-bold">{me?.name?.[0]}</span>
+              <span className="w-10 h-10 rounded-full bg-brand-600 text-white flex items-center justify-center font-bold">{me?.name?.[0]}</span>
               <div>
-                <div className="text-sm font-bold">{dName(me)}</div>
+                <div className="text-sm font-bold"><BadgeMark b={me?.displayBadge} />{dName(me)}</div>
                 <RoleTag r={state.me.role} />
               </div>
             </div>
-            {NAV.map((n) => (
-              <button key={n.id} onClick={() => { goto(n.id); setMenuOpen(false); }}
-                className={`w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm font-bold ${route === n.id ? "bg-indigo-600 text-white" : "text-slate-700 hover:bg-slate-100"}`}>
-                <span className="w-5 text-center">{n.icon}</span>{n.label}
-              </button>
-            ))}
-            <button onClick={() => { exitTeam(); setMenuOpen(false); }} className="w-full mt-3 px-3 py-2.5 rounded-lg text-sm font-bold text-slate-600 bg-slate-100">↩ チーム一覧へ</button>
+            {NAV.map((n) => {
+              const Icon = NAV_ICON[n.id];
+              return (
+                <button key={n.id} onClick={() => { goto(n.id); setMenuOpen(false); }}
+                  className={`w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm font-bold ${route === n.id ? "bg-brand-600 text-white" : "text-slate-700 hover:bg-slate-100"}`}>
+                  <Icon className="w-4.5 h-4.5 shrink-0" />{n.label}
+                </button>
+              );
+            })}
+            <button onClick={() => { exitTeam(); setMenuOpen(false); }} className="w-full mt-3 px-3 py-2.5 rounded-lg text-sm font-bold text-slate-600 bg-slate-100">チーム一覧へ</button>
             {user && <button onClick={logout} className="w-full mt-2 px-3 py-2.5 rounded-lg text-sm font-bold text-rose-600 bg-rose-50">ログアウト</button>}
           </div>
         </div>
@@ -878,6 +970,10 @@ function TeamApp({ teamId, user, say, fail, exitTeam, logout, openBilling }) {
             if (f.id) run(() => api.editAssign(teamId, f.id, f), "配置を保存しました");
             else run(() => api.addAssign(teamId, f), "配置を保存しました");
           }} />
+      )}
+      {modal?.type === "bulkAssign" && (
+        <BulkAssignModal enriched={enriched} team={team} fail={fail} onClose={() => setModal(null)}
+          onSubmit={(items) => run(async () => { for (const it of items) await api.addAssign(teamId, it); }, `${items.length}件の配置を登録しました`)} />
       )}
     </div>
   );
@@ -916,9 +1012,9 @@ function CommandCenter({ team, now, kpi, enriched, posSummary, state, setRoute, 
       </div>
 
       {alerts.length > 0 && (
-        <Card className="overflow-hidden">
+        <Card className="overflow-hidden border-rose-200">
           <div className="px-4 pt-3 pb-1 flex items-center justify-between">
-            <h3 className="text-sm font-bold text-slate-700">🚨 アラート</h3>
+            <h3 className="text-sm font-bold text-rose-700 flex items-center gap-1.5"><AlertTriangle className="w-4 h-4" />アラート</h3>
             <span className="text-xs font-bold text-rose-600">{alerts.length}件</span>
           </div>
           <div className="divide-y divide-slate-100">
@@ -936,17 +1032,19 @@ function CommandCenter({ team, now, kpi, enriched, posSummary, state, setRoute, 
         {team.aiEnabled ? (
           <>
             <div className="px-4 pt-3 pb-1 flex items-center justify-between bg-violet-50">
-              <h3 className="text-sm font-bold text-violet-800">✨ AI提案</h3>
+              <h3 className="text-sm font-bold text-violet-800 flex items-center gap-1.5"><Sparkles className="w-4 h-4" />AI提案</h3>
               <div className="flex gap-2 items-center pb-1">
-                <button onClick={runAI} disabled={ai.loading} className="text-xs font-bold text-violet-700 disabled:opacity-40">{ai.loading ? "分析中..." : "🔄 再分析"}</button>
+                <button onClick={runAI} disabled={ai.loading} className="text-xs font-bold text-violet-700 disabled:opacity-40 flex items-center gap-1"><RefreshCw className={`w-3.5 h-3.5 ${ai.loading ? "animate-spin" : ""}`} />{ai.loading ? "分析中..." : "再分析"}</button>
                 <button onClick={() => setRoute("ai")} className="text-xs font-bold text-violet-700">すべて見る</button>
               </div>
             </div>
             <div className="p-3 space-y-2">
               {ai.loading && <p className="text-xs text-slate-400 px-1">AIが現場状況を分析しています...</p>}
-              {!ai.loading && (ai.list || []).slice(0, 3).map((s, i) => (
+              {!ai.loading && (ai.list || []).slice(0, 3).map((s, i) => {
+                const SIcon = s.kind === "break" ? Coffee : s.kind === "assign" ? MapPin : Lightbulb;
+                return (
                 <div key={i} className="flex items-start gap-2 bg-slate-50 rounded-lg px-3 py-2">
-                  <span className="text-base mt-0.5">{s.kind === "break" ? "☕" : s.kind === "assign" ? "📍" : "💡"}</span>
+                  <SIcon className="w-4 h-4 mt-0.5 text-violet-600 shrink-0" />
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-bold">{s.title}</div>
                     <div className="text-xs text-slate-500">{s.detail}</div>
@@ -955,13 +1053,14 @@ function CommandCenter({ team, now, kpi, enriched, posSummary, state, setRoute, 
                     <Btn color="violet" onClick={() => applySuggestion(s)} className="py-1.5 text-xs shrink-0">適用</Btn>
                   )}
                 </div>
-              ))}
+                );
+              })}
             </div>
           </>
         ) : (
           <div className="px-4 py-4 bg-violet-50 flex items-center justify-between gap-3">
             <div>
-              <h3 className="text-sm font-bold text-violet-800">✨ AI提案は現在OFFです</h3>
+              <h3 className="text-sm font-bold text-violet-800 flex items-center gap-1.5"><Sparkles className="w-4 h-4" />AI提案は現在OFFです</h3>
               <p className="text-xs text-violet-600 mt-0.5">休憩不足の解消などをAIが分析して提案します。</p>
             </div>
             <div className="shrink-0 flex gap-1.5">
@@ -975,8 +1074,8 @@ function CommandCenter({ team, now, kpi, enriched, posSummary, state, setRoute, 
       <div className="grid lg:grid-cols-2 gap-3">
         <Card>
           <div className="px-4 pt-3 pb-1 flex items-center justify-between">
-            <h3 className="text-sm font-bold text-slate-700">📍 現在の配置</h3>
-            <button onClick={() => setRoute("assign")} className="text-xs font-bold text-indigo-600">配置管理へ</button>
+            <h3 className="text-sm font-bold text-slate-700 flex items-center gap-1.5"><MapPin className="w-4 h-4" />現在の配置</h3>
+            <button onClick={() => setRoute("assign")} className="text-xs font-bold text-brand-600">配置管理へ</button>
           </div>
           <div className="p-3 grid grid-cols-2 gap-2">
             {posSummary.map((s) => (
@@ -988,7 +1087,7 @@ function CommandCenter({ team, now, kpi, enriched, posSummary, state, setRoute, 
                 <div className="flex flex-wrap gap-1 mt-1">
                   {s.members.map((p) => (
                     <span key={p.id} className={`font-bold px-1.5 py-0.5 rounded ${p.status === "休憩中" ? "bg-amber-200 text-amber-800" : "bg-slate-200 text-slate-700"}`} style={{ fontSize: 10 }}>
-                      {p.displayBadge}{p.name.split(" ")[0]}
+                      <BadgeMark b={p.displayBadge} className="w-3 h-3" />{p.name.split(" ")[0]}
                     </span>
                   ))}
                   {s.members.length === 0 && <span className="text-slate-400" style={{ fontSize: 10 }}>空き</span>}
@@ -1000,14 +1099,14 @@ function CommandCenter({ team, now, kpi, enriched, posSummary, state, setRoute, 
 
         <Card>
           <div className="px-4 pt-3 pb-1 flex items-center justify-between">
-            <h3 className="text-sm font-bold text-slate-700">🙋 スタッフ状況</h3>
-            <button onClick={() => setRoute("dash")} className="text-xs font-bold text-indigo-600">詳細一覧</button>
+            <h3 className="text-sm font-bold text-slate-700 flex items-center gap-1.5"><Users className="w-4 h-4" />スタッフ状況</h3>
+            <button onClick={() => setRoute("dash")} className="text-xs font-bold text-brand-600">詳細一覧</button>
           </div>
           <div className="p-3 space-y-1.5 overflow-y-auto" style={{ maxHeight: 280 }}>
             {enriched.map((p) => (
               <div key={p.id} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-slate-50">
                 <div className="flex-1 min-w-0">
-                  <div className="text-sm font-bold truncate">{dName(p)}</div>
+                  <div className="text-sm font-bold truncate"><BadgeMark b={p?.displayBadge} />{dName(p)}</div>
                   <div className="text-slate-400 truncate" style={{ fontSize: 10 }}>{p.curAssign?.name || "配置なし"} / 休憩 {p.taken}/{p.req}分</div>
                 </div>
                 <Badge s={p.status} />
@@ -1021,15 +1120,15 @@ function CommandCenter({ team, now, kpi, enriched, posSummary, state, setRoute, 
       <div className="grid lg:grid-cols-2 gap-3">
         <Card>
           <div className="px-4 pt-3 pb-1 flex items-center justify-between">
-            <h3 className="text-sm font-bold text-slate-700">💬 チャット</h3>
-            <button onClick={() => setRoute("chat")} className="text-xs font-bold text-indigo-600">開く</button>
+            <h3 className="text-sm font-bold text-slate-700 flex items-center gap-1.5"><MessageCircle className="w-4 h-4" />チャット</h3>
+            <button onClick={() => setRoute("chat")} className="text-xs font-bold text-brand-600">開く</button>
           </div>
           <div className="p-3 space-y-1.5">
             {state.chat.slice(-3).map((m) => {
               const p = state.participants.find((x) => x.id === m.pid);
               return (
                 <div key={m.id} className="text-xs bg-slate-50 rounded-lg px-3 py-2">
-                  <span className="font-bold">{dName(p)}</span>
+                  <span className="font-bold"><BadgeMark b={p?.displayBadge} />{dName(p)}</span>
                   <span className="text-slate-400 ml-2 font-mono" style={{ fontSize: 10 }}>{fmtHM(m.time)}</span>
                   <div className="text-slate-600 mt-0.5">{m.text}</div>
                 </div>
@@ -1040,12 +1139,12 @@ function CommandCenter({ team, now, kpi, enriched, posSummary, state, setRoute, 
         </Card>
         <Card>
           <div className="px-4 pt-3 pb-1 flex items-center justify-between">
-            <h3 className="text-sm font-bold text-slate-700">🔔 通知</h3>
-            <button onClick={() => setRoute("notify")} className="text-xs font-bold text-indigo-600">通知センターへ</button>
+            <h3 className="text-sm font-bold text-slate-700 flex items-center gap-1.5"><Bell className="w-4 h-4" />通知</h3>
+            <button onClick={() => setRoute("notify")} className="text-xs font-bold text-brand-600">通知センターへ</button>
           </div>
           <div className="p-3 space-y-1.5">
             {state.notifications.slice(0, 4).map((n) => (
-              <div key={n.id} className={`text-xs rounded-lg px-3 py-2 ${n.read ? "bg-slate-50 text-slate-500" : "bg-indigo-50 text-slate-700"}`}>
+              <div key={n.id} className={`text-xs rounded-lg px-3 py-2 ${n.read ? "bg-slate-50 text-slate-500" : "bg-brand-50 text-slate-700"}`}>
                 <span className="font-bold">[{n.type}]</span> {n.text}
                 <span className="text-slate-400 ml-1 font-mono" style={{ fontSize: 10 }}>{fmtHM(n.time)}</span>
               </div>
@@ -1063,8 +1162,8 @@ function AIScreen({ team, ai, runAI, applySuggestion, onToggleAi, openBilling })
   return (
     <div className="space-y-3 max-w-md mx-auto">
       <div className="flex items-center justify-between px-1">
-        <h2 className="font-bold text-lg">✨ AI提案</h2>
-        {team.aiEnabled && <Btn color="violet" onClick={runAI} disabled={ai.loading}>{ai.loading ? "分析中..." : "🔄 現場を再分析"}</Btn>}
+        <h2 className="font-bold text-lg flex items-center gap-1.5"><Sparkles className="w-4.5 h-4.5" />AI提案</h2>
+        {team.aiEnabled && <Btn color="violet" onClick={runAI} disabled={ai.loading} className="flex items-center gap-1.5"><RefreshCw className={`w-4 h-4 ${ai.loading ? "animate-spin" : ""}`} />{ai.loading ? "分析中..." : "現場を再分析"}</Btn>}
       </div>
       <Card className="p-3 text-xs text-slate-500">
         現在の勤務・休憩・配置状況をAIが分析し、休憩不足の解消などを提案します。「適用」で配置(休憩予定含む)として登録され、監査ログに残ります。
@@ -1085,12 +1184,14 @@ function AIScreen({ team, ai, runAI, applySuggestion, onToggleAi, openBilling })
       {team.aiEnabled && (
         <>
           {ai.note && <p className="text-xs text-violet-600 font-bold px-1">{ai.note}</p>}
-          {ai.loading && <Card className="p-6 text-center text-sm text-slate-400"><div className="text-2xl mb-2">🤖</div>AIが現場状況を分析しています...</Card>}
+          {ai.loading && <Card className="p-6 text-center text-sm text-slate-400"><Bot className="w-7 h-7 mx-auto mb-2 text-violet-400" />AIが現場状況を分析しています...</Card>}
           {!ai.loading && !ai.list && <Card className="p-6 text-center text-sm text-slate-400">「現場を再分析」を押すと提案が表示されます。</Card>}
-          {!ai.loading && (ai.list || []).map((s, i) => (
+          {!ai.loading && (ai.list || []).map((s, i) => {
+            const SIcon = s.kind === "break" ? Coffee : s.kind === "assign" ? MapPin : Lightbulb;
+            return (
             <Card key={i} className="p-4">
               <div className="flex items-start gap-3">
-                <span className="text-2xl">{s.kind === "break" ? "☕" : s.kind === "assign" ? "📍" : "💡"}</span>
+                <SIcon className="w-6 h-6 text-violet-600 shrink-0" />
                 <div className="flex-1 min-w-0">
                   <div className="font-bold text-sm">{s.title}</div>
                   <div className="text-xs text-slate-500 mt-0.5">{s.detail}</div>
@@ -1103,7 +1204,8 @@ function AIScreen({ team, ai, runAI, applySuggestion, onToggleAi, openBilling })
                 <Btn color="violet" className="w-full mt-3" onClick={() => applySuggestion(s)}>この提案を配置に適用する</Btn>
               )}
             </Card>
-          ))}
+            );
+          })}
           <p className="text-slate-400 px-1" style={{ fontSize: 10 }}>※AI提案は参考情報です。最終判断は現場責任者が行ってください。</p>
         </>
       )}
@@ -1117,10 +1219,16 @@ function ChatScreen({ state, me, onSend }) {
   const boxRef = useRef(null);
   useEffect(() => { if (boxRef.current) boxRef.current.scrollTop = boxRef.current.scrollHeight; }, [state.chat.length]);
   const send = () => { if (text.trim()) { onSend(text.trim()); setText(""); } };
-  const stamps = ["了解です👍", "急行します🏃", "休憩入ります☕", "戻りました✅", "応援お願いします🙏"];
+  const stamps = [
+    { text: "了解です", Icon: ThumbsUp },
+    { text: "急行します", Icon: Zap },
+    { text: "休憩入ります", Icon: Coffee },
+    { text: "戻りました", Icon: CheckCircle2 },
+    { text: "応援お願いします", Icon: HandHeart },
+  ];
   return (
     <div className="max-w-md mx-auto flex flex-col" style={{ height: "calc(100vh - 180px)" }}>
-      <h2 className="font-bold text-lg px-1 mb-2">💬 チームチャット</h2>
+      <h2 className="font-bold text-lg px-1 mb-2 flex items-center gap-1.5"><MessageCircle className="w-4.5 h-4.5" />チームチャット</h2>
       <Card className="flex-1 overflow-hidden p-3">
         <div ref={boxRef} className="h-full overflow-y-auto space-y-3">
           {state.chat.map((m) => {
@@ -1129,8 +1237,8 @@ function ChatScreen({ state, me, onSend }) {
             return (
               <div key={m.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}>
                 <div style={{ maxWidth: "80%" }}>
-                  {!mine && <div className="text-xs font-bold text-slate-500 mb-0.5">{dName(p)}</div>}
-                  <div className={`px-3 py-2 rounded-2xl text-sm ${mine ? "bg-indigo-600 text-white rounded-br-md" : "bg-slate-100 text-slate-800 rounded-bl-md"}`}>{m.text}</div>
+                  {!mine && <div className="text-xs font-bold text-slate-500 mb-0.5"><BadgeMark b={p?.displayBadge} />{dName(p)}</div>}
+                  <div className={`px-3 py-2 rounded-2xl text-sm ${mine ? "bg-brand-600 text-white rounded-br-md" : "bg-slate-100 text-slate-800 rounded-bl-md"}`}>{m.text}</div>
                   <div className={`text-slate-400 font-mono mt-0.5 ${mine ? "text-right" : ""}`} style={{ fontSize: 10 }}>{fmtHM(m.time)}</div>
                 </div>
               </div>
@@ -1140,8 +1248,10 @@ function ChatScreen({ state, me, onSend }) {
         </div>
       </Card>
       <div className="flex gap-1 overflow-x-auto py-2">
-        {stamps.map((s) => (
-          <button key={s} onClick={() => onSend(s)} className="shrink-0 px-3 py-1.5 rounded-full bg-white border border-slate-200 text-xs font-bold text-slate-600">{s}</button>
+        {stamps.map(({ text, Icon }) => (
+          <button key={text} onClick={() => onSend(text)} className="shrink-0 flex items-center gap-1 px-3 py-1.5 rounded-full bg-white border border-slate-200 text-xs font-bold text-slate-600">
+            <Icon className="w-3.5 h-3.5" />{text}
+          </button>
         ))}
       </div>
       <div className="flex gap-2">
@@ -1161,7 +1271,7 @@ function MemberScreen({ p, now, team, setRoute, onBreakStart, onBreakEnd, onChec
     <div className="space-y-3 max-w-md mx-auto">
       <Card className="p-5 text-center">
         <div className="text-xs text-slate-400">{team.siteName} / {team.date}</div>
-        <div className="font-bold text-lg mt-0.5">{dName(p)}</div>
+        <div className="font-bold text-lg mt-0.5"><BadgeMark b={p?.displayBadge} />{dName(p)}</div>
         <div className={`inline-flex items-center gap-2 mt-3 px-4 py-2 rounded-full font-bold ${st.bg} ${st.tx}`}>
           <span className={`w-2.5 h-2.5 rounded-full ${st.dot}`} />{p.status}
           {p.status === "休憩中" && open && <span className="text-xs font-normal">({fmtMin(minDiff(open.start, now))}経過)</span>}
@@ -1170,11 +1280,11 @@ function MemberScreen({ p, now, team, setRoute, onBreakStart, onBreakEnd, onChec
         {!p.checkOut && p.status !== "開始前" && (
           <div className="grid grid-cols-1 gap-2 mt-4">
             {p.status === "休憩中" ? (
-              <Btn big color="emerald" onClick={onBreakEnd}>▶ 勤務に戻る</Btn>
+              <Btn big color="emerald" onClick={onBreakEnd}><Play className="w-4 h-4 inline -mt-0.5 mr-1" />勤務に戻る</Btn>
             ) : (
-              <Btn big color="amber" onClick={onBreakStart}>☕ 休憩開始</Btn>
+              <Btn big color="amber" onClick={onBreakStart}><Coffee className="w-4 h-4 inline -mt-0.5 mr-1" />休憩開始</Btn>
             )}
-            <Btn big color="rose" onClick={() => { if (confirm("退勤を記録しますか?")) onCheckout(); }}>🏁 退勤する</Btn>
+            <Btn big color="rose" onClick={() => { if (confirm("退勤を記録しますか?")) onCheckout(); }}><LogOut className="w-4 h-4 inline -mt-0.5 mr-1" />退勤する</Btn>
           </div>
         )}
         {p.status === "開始前" && (
@@ -1184,14 +1294,14 @@ function MemberScreen({ p, now, team, setRoute, onBreakStart, onBreakEnd, onChec
         )}
         {p.checkOut && (
           <div className="mt-4 bg-slate-50 rounded-xl px-4 py-3 text-sm text-slate-500 font-bold">本日はお疲れさまでした。
-            <Btn className="w-full mt-2" onClick={() => setRoute("vote")}>🗳 ポイント投票へ</Btn>
+            <Btn className="w-full mt-2" onClick={() => setRoute("vote")}><VoteIcon className="w-4 h-4 inline -mt-0.5 mr-1" />ポイント投票へ</Btn>
           </div>
         )}
       </Card>
 
       <Card className="p-4">
         <div className="flex items-center justify-between mb-2">
-          <span className="text-sm font-bold text-slate-700">☕ 休憩状況</span>
+          <span className="text-sm font-bold text-slate-700 flex items-center gap-1.5"><Coffee className="w-4 h-4" />休憩状況</span>
           <span className="text-xs text-slate-400">6h以上45分 / 8h以上60分</span>
         </div>
         <div className="h-3 bg-slate-100 rounded-full overflow-hidden">
@@ -1227,13 +1337,13 @@ function MemberScreen({ p, now, team, setRoute, onBreakStart, onBreakEnd, onChec
       </Card>
 
       <Card className="p-4">
-        <div className="text-sm font-bold text-slate-700 mb-2">📍 自分の配置</div>
+        <div className="text-sm font-bold text-slate-700 mb-2 flex items-center gap-1.5"><MapPin className="w-4 h-4" />自分の配置</div>
         {p.myAssigns.length === 0 && <p className="text-xs text-slate-400">配置はまだ登録されていません。</p>}
         {p.myAssigns.map((a) => {
           const cur = now >= a.start && now < a.end;
           const past = now >= a.end;
           return (
-            <div key={a.id} className={`flex items-center gap-3 px-3 py-2 rounded-lg mb-1 ${cur ? "bg-indigo-600 text-white" : past ? "bg-slate-50 text-slate-400" : "bg-slate-50"}`}>
+            <div key={a.id} className={`flex items-center gap-3 px-3 py-2 rounded-lg mb-1 ${cur ? "bg-brand-600 text-white" : past ? "bg-slate-50 text-slate-400" : "bg-slate-50"}`}>
               <span className="font-mono text-xs tabular-nums w-24">{fmtHM(a.start)}–{fmtHM(a.end)}</span>
               <span className="font-bold text-sm flex-1">{a.name}</span>
               {cur && <span className="bg-white/20 px-1.5 py-0.5 rounded" style={{ fontSize: 10 }}>現在</span>}
@@ -1248,23 +1358,35 @@ function MemberScreen({ p, now, team, setRoute, onBreakStart, onBreakEnd, onChec
 /* ================================ 参加者一覧(詳細) ================================ */
 function Dashboard({ team, enriched, isOwner, votingClosed, setRoute, setModal, onCheckout, onToggleRole, onToggleAi, openBilling, onNotifyShorts, onCloseVoting, onDeleteTeam }) {
   const shorts = enriched.filter((p) => p.shortage);
+  const exportAttendanceCSV = () => {
+    const header = ["氏名", "役割", "予定勤務開始", "予定勤務終了", "退勤時刻", "必要休憩(分)", "取得休憩(分)", "休憩不足(分)", "休憩詳細"];
+    const rows = enriched.map((p) => [
+      p.name, ROLE_LABEL[p.role] || p.role, fmtHM(p.planStart), fmtHM(p.planEnd), p.checkOut ? fmtHM(p.checkOut) : "",
+      p.req, p.taken, p.remain,
+      p.breaks.map((b) => `${fmtHM(b.start)}-${b.end ? fmtHM(b.end) : "未終了"}`).join(";"),
+    ]);
+    downloadCSV(`勤務休憩実績_${team.siteName}_${team.date}.csv`, [header, ...rows]);
+  };
   return (
     <div className="space-y-3">
-      <h2 className="font-bold text-lg lg:text-xl px-1">参加者一覧(詳細)</h2>
+      <div className="flex items-center justify-between px-1 gap-2">
+        <h2 className="font-bold text-lg lg:text-xl">参加者一覧(詳細)</h2>
+        <button onClick={exportAttendanceCSV} className="text-xs font-bold text-brand-600 bg-brand-50 px-2.5 py-1.5 rounded-lg whitespace-nowrap">CSVダウンロード</button>
+      </div>
       <Card className="p-4 flex items-center justify-between gap-3">
         <div>
-          <div className="text-sm font-bold text-slate-700">✨ AI提案</div>
+          <div className="text-sm font-bold text-slate-700 flex items-center gap-1.5"><Sparkles className="w-4 h-4" />AI提案</div>
           <div className="text-xs text-slate-500 mt-0.5">現在 {team.aiEnabled ? "ON" : "OFF"} です。{!team.aiEnabled && "OFFの間は分析を行わず費用も発生しません。"}</div>
         </div>
         <div className="shrink-0 flex gap-1.5">
-          <button onClick={openBilling} className="py-2 px-2.5 text-xs font-bold text-indigo-600 bg-indigo-50 rounded-lg">プラン</button>
+          <button onClick={openBilling} className="py-2 px-2.5 text-xs font-bold text-brand-600 bg-brand-50 rounded-lg">プラン</button>
           <Btn color={team.aiEnabled ? "slate" : "violet"} onClick={onToggleAi} className="py-2 text-xs">{team.aiEnabled ? "OFFにする" : "ONにする"}</Btn>
         </div>
       </Card>
       {shorts.length > 0 && (
         <Card className="p-3 border-rose-300 bg-rose-50">
           <div className="flex items-center justify-between">
-            <span className="text-sm font-bold text-rose-700">🚨 休憩不足 {shorts.length}名</span>
+            <span className="text-sm font-bold text-rose-700 flex items-center gap-1.5"><AlertTriangle className="w-4 h-4" />休憩不足 {shorts.length}名</span>
             <Btn color="rose" onClick={() => onNotifyShorts(shorts)} className="py-1.5 text-xs">不足者へ通知</Btn>
           </div>
         </Card>
@@ -1273,7 +1395,7 @@ function Dashboard({ team, enriched, isOwner, votingClosed, setRoute, setModal, 
         {enriched.map((p) => (
           <div key={p.id} className={`px-4 py-3 ${p.shortage ? "bg-rose-50" : ""}`}>
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="font-bold text-sm">{dName(p)}</span>
+              <span className="font-bold text-sm"><BadgeMark b={p?.displayBadge} />{dName(p)}</span>
               <RoleTag r={p.role} />
               <Badge s={p.status} />
               {p.shortage && <span className="font-bold bg-rose-600 text-white px-1.5 py-0.5 rounded" style={{ fontSize: 10 }}>休憩不足</span>}
@@ -1286,7 +1408,7 @@ function Dashboard({ team, enriched, isOwner, votingClosed, setRoute, setModal, 
               <span>退勤:<b className="text-slate-700">{fmtHM(p.checkOut)}</b></span>
             </div>
             <div className="flex gap-2 mt-2 flex-wrap">
-              <button onClick={() => setModal({ type: "editRecord", id: p.id })} className="text-xs font-bold text-indigo-600 px-2 py-1 bg-indigo-50 rounded-lg">履歴修正</button>
+              <button onClick={() => setModal({ type: "editRecord", id: p.id })} className="text-xs font-bold text-brand-600 px-2 py-1 bg-brand-50 rounded-lg">履歴修正</button>
               {!p.checkOut && p.status !== "開始前" && (
                 <button onClick={() => onCheckout(p.id, p.name)} className="text-xs font-bold text-rose-600 px-2 py-1 bg-rose-50 rounded-lg">代理退勤</button>
               )}
@@ -1302,9 +1424,9 @@ function Dashboard({ team, enriched, isOwner, votingClosed, setRoute, setModal, 
       <Card className="p-4 space-y-2">
         <div className="text-sm font-bold text-slate-700">現場終了処理</div>
         {!votingClosed ? (
-          <Btn className="w-full" onClick={onCloseVoting}>🗳 投票を締め切り結果を確定する</Btn>
+          <Btn className="w-full flex items-center justify-center gap-1.5" onClick={onCloseVoting}><VoteIcon className="w-4 h-4" />投票を締め切り結果を確定する</Btn>
         ) : (
-          <Btn color="slate" className="w-full" onClick={() => setRoute("voteResult")}>🏆 ポイント結果を見る</Btn>
+          <Btn color="slate" className="w-full flex items-center justify-center gap-1.5" onClick={() => setRoute("voteResult")}><Trophy className="w-4 h-4" />ポイント結果を見る</Btn>
         )}
         {isOwner && <Btn color="rose" className="w-full" onClick={onDeleteTeam}>チームを削除(オーナーのみ)</Btn>}
       </Card>
@@ -1335,14 +1457,14 @@ function EditRecordModal({ p, now, team, onClose, onSave }) {
         <div>
           <div className="flex items-center justify-between">
             <label className="text-xs font-bold text-slate-500">休憩履歴</label>
-            <button onClick={() => setBrs([...brs, { s: fmtHM(now), e: "" }])} className="text-xs font-bold text-indigo-600">＋追加</button>
+            <button onClick={() => setBrs([...brs, { s: fmtHM(now), e: "" }])} className="text-xs font-bold text-brand-600">＋追加</button>
           </div>
           {brs.map((b, i) => (
             <div key={i} className="flex items-center gap-2 mt-1.5">
               <input type="time" className={inputCls} value={b.s} onChange={(e) => setBrs(brs.map((x, j) => (j === i ? { ...x, s: e.target.value } : x)))} />
               <span className="text-slate-400">〜</span>
               <input type="time" className={inputCls} value={b.e} onChange={(e) => setBrs(brs.map((x, j) => (j === i ? { ...x, e: e.target.value } : x)))} />
-              <button onClick={() => setBrs(brs.filter((_, j) => j !== i))} aria-label={`休憩${i + 1}件目を削除`} className="text-rose-500 font-bold px-1">✕</button>
+              <button onClick={() => setBrs(brs.filter((_, j) => j !== i))} aria-label={`休憩${i + 1}件目を削除`} className="text-rose-500 px-1"><X className="w-4 h-4" /></button>
             </div>
           ))}
           {brs.length === 0 && <p className="text-xs text-slate-400 mt-1">休憩記録はありません。</p>}
@@ -1354,28 +1476,32 @@ function EditRecordModal({ p, now, team, onClose, onSave }) {
 }
 
 /* ================================ 配置管理 ================================ */
-function AssignScreen({ enriched, now, setModal, onDelete }) {
+function AssignScreen({ enriched, now, setModal, onDelete, onSaveTemplate, hasAssignments }) {
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between px-1">
+      <div className="flex items-center justify-between px-1 gap-2 flex-wrap">
         <h2 className="font-bold text-lg">配置管理</h2>
-        <Btn onClick={() => setModal({ type: "assignForm", init: null })}>＋ 配置を登録</Btn>
+        <div className="flex gap-1.5">
+          <button onClick={onSaveTemplate} disabled={!hasAssignments} className="text-xs font-bold text-violet-600 bg-violet-50 disabled:opacity-40 px-2.5 py-1.5 rounded-lg whitespace-nowrap">テンプレート保存</button>
+          <button onClick={() => setModal({ type: "bulkAssign" })} className="text-xs font-bold text-brand-600 bg-brand-50 px-2.5 py-1.5 rounded-lg whitespace-nowrap">CSV/テンプレート一括登録</button>
+          <Btn onClick={() => setModal({ type: "assignForm", init: null })} className="py-1.5 text-xs">＋ 配置を登録</Btn>
+        </div>
       </div>
       {enriched.map((p) => (
         <Card key={p.id} className="p-4">
           <div className="flex items-center gap-2 mb-2">
-            <span className="font-bold text-sm flex-1">{dName(p)}</span>
+            <span className="font-bold text-sm flex-1"><BadgeMark b={p?.displayBadge} />{dName(p)}</span>
             <Badge s={p.status} />
-            <span className="text-xs text-indigo-700 font-bold">{p.curAssign ? `現在:${p.curAssign.name}` : "現在:—"}</span>
+            <span className="text-xs text-brand-700 font-bold">{p.curAssign ? `現在:${p.curAssign.name}` : "現在:—"}</span>
           </div>
           {p.myAssigns.length === 0 && <p className="text-xs text-slate-400">配置なし</p>}
           {p.myAssigns.map((a) => {
             const cur = now >= a.start && now < a.end;
             return (
-              <div key={a.id} className={`flex items-center gap-2 px-3 py-2 rounded-lg mb-1 ${cur ? "bg-indigo-50 border border-indigo-200" : "bg-slate-50"}`}>
+              <div key={a.id} className={`flex items-center gap-2 px-3 py-2 rounded-lg mb-1 ${cur ? "bg-brand-50 border border-brand-200" : "bg-slate-50"}`}>
                 <span className="font-mono text-xs tabular-nums w-24 shrink-0">{fmtHM(a.start)}–{fmtHM(a.end)}</span>
                 <span className="text-sm font-bold flex-1 min-w-0 truncate">{a.name}{a.note && <span className="text-xs font-normal text-slate-400 ml-1">({a.note})</span>}</span>
-                <button onClick={() => setModal({ type: "assignForm", init: a })} className="text-xs font-bold text-indigo-600 px-1.5">編集</button>
+                <button onClick={() => setModal({ type: "assignForm", init: a })} className="text-xs font-bold text-brand-600 px-1.5">編集</button>
                 <button onClick={() => onDelete(a.id)} className="text-xs font-bold text-rose-500 px-1.5">削除</button>
               </div>
             );
@@ -1414,13 +1540,110 @@ function AssignFormModal({ init, enriched, team, onClose, onSave }) {
           <input className={inputCls} value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="例:入口誘導" />
           <div className="flex flex-wrap gap-1 mt-1.5">
             {[...POSITION_NAMES, "休憩予定"].map((n) => (
-              <button key={n} onClick={() => setF({ ...f, name: n })} className={`text-xs font-bold px-2 py-1 rounded-full ${f.name === n ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-600"}`}>{n}</button>
+              <button key={n} onClick={() => setF({ ...f, name: n })} className={`text-xs font-bold px-2 py-1 rounded-full ${f.name === n ? "bg-brand-600 text-white" : "bg-slate-100 text-slate-600"}`}>{n}</button>
             ))}
           </div>
         </Field>
         <Field label="備考"><input className={inputCls} value={f.note} onChange={(e) => setF({ ...f, note: e.target.value })} /></Field>
         {f.start && f.end && startMs >= endMs && <p className="text-xs text-rose-600 font-bold">終了時刻は開始時刻より後にしてください。</p>}
         <Btn className="w-full" disabled={!ok} onClick={() => onSave({ id: f.id, pid: f.pid, start: startMs, end: endMs, name: f.name, note: f.note })}>保存(監査ログに記録)</Btn>
+      </div>
+    </Modal>
+  );
+}
+
+/* CSVアップロード、または保存済みテンプレートから、配置を複数件まとめて登録する */
+function BulkAssignModal({ enriched, team, onClose, onSubmit, fail }) {
+  const [rows, setRows] = useState([]);
+  const [templates, setTemplates] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => { api.templates().then((d) => setTemplates(d.templates)).catch(() => setTemplates([])); }, []);
+
+  const matchPid = (name) => enriched.find((p) => p.name === name)?.id || "";
+
+  const loadFromCSV = (file) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const all = parseCSV(String(reader.result || ""));
+      if (all.length === 0) return;
+      const body = /^(参加者名|氏名|名前)/.test(all[0][0] || "") ? all.slice(1) : all;
+      const parsed = body
+        .map((r) => ({ pid: matchPid((r[0] || "").trim()), rawName: (r[0] || "").trim(), start: (r[1] || "").trim(), end: (r[2] || "").trim(), name: (r[3] || "").trim(), note: (r[4] || "").trim() }))
+        .filter((r) => r.start && r.end && r.name);
+      setRows(parsed);
+    };
+    reader.readAsText(file, "utf-8");
+  };
+
+  const applyTemplate = async (tplId) => {
+    if (!tplId) return;
+    try {
+      const d = await api.templateItems(tplId);
+      setRows(d.items.map((it) => ({ pid: "", rawName: "", start: it.start, end: it.end, name: it.name, note: it.note })));
+    } catch (e) { fail(e); }
+  };
+
+  const updateRow = (i, patch) => setRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
+  const removeRow = (i) => setRows((rs) => rs.filter((_, idx) => idx !== i));
+  const addRow = () => setRows((rs) => [...rs, { pid: "", rawName: "", start: "09:00", end: "10:00", name: "", note: "" }]);
+
+  const valid = rows.filter((r) => r.pid && r.name && r.start && r.end && dateT(team.date, r.start) < dateT(team.date, r.end));
+  const invalidCount = rows.length - valid.length;
+
+  const submit = async () => {
+    setBusy(true);
+    try {
+      await onSubmit(valid.map((r) => ({ pid: r.pid, start: dateT(team.date, r.start), end: dateT(team.date, r.end), name: r.name, note: r.note || "" })));
+      onClose();
+    } finally { setBusy(false); }
+  };
+
+  const downloadSample = () => downloadCSV("配置一括登録_サンプル.csv", [
+    ["参加者名", "開始時刻", "終了時刻", "配置名", "備考"],
+    [enriched[0]?.name || "山田太郎", "09:00", "12:00", "入口誘導", ""],
+  ]);
+
+  return (
+    <Modal title="配置を一括登録" onClose={onClose}>
+      <div className="space-y-3">
+        <div className="flex gap-2">
+          <label className="flex-1 text-center text-xs font-bold text-brand-600 bg-brand-50 rounded-lg py-2 cursor-pointer">
+            CSVを選択
+            <input type="file" accept=".csv" className="hidden" onChange={(e) => e.target.files[0] && loadFromCSV(e.target.files[0])} />
+          </label>
+          <button onClick={downloadSample} className="flex-1 text-xs font-bold text-slate-600 bg-slate-100 rounded-lg py-2">サンプルCSVをダウンロード</button>
+        </div>
+        <Field label="保存済みテンプレートから読み込む">
+          <select className={inputCls} defaultValue="" onChange={(e) => applyTemplate(e.target.value)}>
+            <option value="">選択してください</option>
+            {templates?.map((t) => <option key={t.id} value={t.id}>{t.name}({t.itemCount}件)</option>)}
+          </select>
+          {templates && templates.length === 0 && <p className="text-xs text-slate-400 mt-1">保存済みテンプレートはまだありません。配置管理画面の「テンプレート保存」から作成できます。</p>}
+        </Field>
+
+        {rows.length > 0 && (
+          <div className="space-y-2 overflow-y-auto" style={{ maxHeight: "40vh" }}>
+            {rows.map((r, i) => (
+              <div key={i} className="p-2.5 bg-slate-50 rounded-lg space-y-1.5">
+                <div className="flex items-center gap-1.5">
+                  <input type="time" className={inputCls} value={r.start} onChange={(e) => updateRow(i, { start: e.target.value })} />
+                  <span className="text-slate-400 text-xs shrink-0">〜</span>
+                  <input type="time" className={inputCls} value={r.end} onChange={(e) => updateRow(i, { end: e.target.value })} />
+                  <button onClick={() => removeRow(i)} aria-label={`${i + 1}行目を削除`} className="text-rose-500 px-1 shrink-0"><X className="w-4 h-4" /></button>
+                </div>
+                <input className={inputCls} value={r.name} onChange={(e) => updateRow(i, { name: e.target.value })} placeholder="配置名" />
+                <select className={inputCls} value={r.pid} onChange={(e) => updateRow(i, { pid: e.target.value })}>
+                  <option value="">対象メンバーを選択{r.rawName ? `(CSV上の名前:${r.rawName})` : ""}</option>
+                  {enriched.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              </div>
+            ))}
+          </div>
+        )}
+        <button onClick={addRow} className="w-full py-1.5 rounded-lg border-2 border-dashed border-slate-300 text-slate-500 text-xs font-bold">＋ 行を追加</button>
+        {invalidCount > 0 && <p className="text-xs text-rose-600 font-bold">{invalidCount}件は対象メンバー未選択または時刻の不備のため登録されません。</p>}
+        <Btn className="w-full" disabled={busy || valid.length === 0} onClick={submit}>{busy ? "登録中..." : `${valid.length}件を登録する(監査ログに記録)`}</Btn>
       </div>
     </Modal>
   );
@@ -1436,7 +1659,7 @@ function Timeline({ enriched, now, team }) {
       <h2 className="font-bold text-lg lg:text-xl px-1">タイムライン</h2>
       <div className="flex flex-wrap gap-3 px-1 text-xs font-bold text-slate-500">
         <span className="flex items-center gap-1"><span className="w-3 h-2 rounded bg-emerald-200 border border-emerald-400" />勤務予定</span>
-        <span className="flex items-center gap-1"><span className="w-3 h-2 rounded bg-indigo-500" />配置</span>
+        <span className="flex items-center gap-1"><span className="w-3 h-2 rounded bg-brand-500" />配置</span>
         <span className="flex items-center gap-1"><span className="w-3 h-2 rounded bg-amber-500" />実休憩</span>
         <span className="flex items-center gap-1"><span className="w-1 h-3 bg-rose-500" />現在</span>
       </div>
@@ -1450,14 +1673,14 @@ function Timeline({ enriched, now, team }) {
           {enriched.map((p) => (
             <div key={p.id} className="flex items-center mb-2">
               <div className="w-28 shrink-0 pr-2">
-                <div className="text-xs font-bold truncate">{dName(p)}</div>
+                <div className="text-xs font-bold truncate"><BadgeMark b={p?.displayBadge} />{dName(p)}</div>
                 <Badge s={p.status} />
               </div>
               <div className="relative flex-1 h-9 bg-slate-50 rounded-lg overflow-hidden">
                 <div className="absolute top-1 bottom-1 rounded bg-emerald-100 border border-emerald-300"
                   style={{ left: `${pct(p.planStart)}%`, width: `${pct(p.checkOut ?? p.planEnd) - pct(p.planStart)}%` }} />
                 {p.myAssigns.map((a) => (
-                  <div key={a.id} className="absolute flex items-center justify-center text-white font-bold rounded bg-indigo-500 overflow-hidden"
+                  <div key={a.id} className="absolute flex items-center justify-center text-white font-bold rounded bg-brand-500 overflow-hidden"
                     style={{ left: `${pct(a.start)}%`, width: `${pct(a.end) - pct(a.start)}%`, top: 6, bottom: 6, fontSize: 10 }}
                     title={`${fmtHM(a.start)}–${fmtHM(a.end)} ${a.name}`}>
                     <span className="truncate px-1">{a.name}</span>
@@ -1477,14 +1700,14 @@ function Timeline({ enriched, now, team }) {
         {enriched.map((p) => (
           <Card key={p.id} className="p-3">
             <div className="flex items-center gap-2">
-              <span className="font-bold text-sm flex-1">{dName(p)}</span>
+              <span className="font-bold text-sm flex-1"><BadgeMark b={p?.displayBadge} />{dName(p)}</span>
               <Badge s={p.status} />
             </div>
             <div className="font-mono text-xs text-slate-500 mt-0.5">勤務予定 {fmtHM(p.planStart)}–{fmtHM(p.planEnd)}{p.checkOut && ` / 退勤 ${fmtHM(p.checkOut)}`}</div>
             <div className="relative h-3 bg-slate-100 rounded-full mt-2 overflow-hidden">
               <div className="absolute top-0 bottom-0 bg-emerald-200" style={{ left: `${pct(p.planStart)}%`, width: `${pct(p.checkOut ?? p.planEnd) - pct(p.planStart)}%` }} />
               {p.myAssigns.map((a) => (
-                <div key={a.id} className="absolute top-0 bottom-0 bg-indigo-500 opacity-80" style={{ left: `${pct(a.start)}%`, width: `${pct(a.end) - pct(a.start)}%` }} />
+                <div key={a.id} className="absolute top-0 bottom-0 bg-brand-500 opacity-80" style={{ left: `${pct(a.start)}%`, width: `${pct(a.end) - pct(a.start)}%` }} />
               ))}
               {p.breaks.map((b, i) => (
                 <div key={i} className="absolute top-0 bottom-0 bg-amber-500" style={{ left: `${pct(b.start)}%`, width: `${Math.max(1, pct(b.end ?? now) - pct(b.start))}%` }} />
@@ -1495,7 +1718,7 @@ function Timeline({ enriched, now, team }) {
               {p.myAssigns.map((a) => (
                 <div key={a.id} className="flex gap-2 text-xs">
                   <span className="font-mono text-slate-400 tabular-nums">{fmtHM(a.start)}–{fmtHM(a.end)}</span>
-                  <span className="font-bold text-indigo-700">{a.name}</span>
+                  <span className="font-bold text-brand-700">{a.name}</span>
                 </div>
               ))}
             </div>
@@ -1512,14 +1735,14 @@ function Vote({ me, enriched, voting, setRoute, onVote }) {
   const candidates = enriched.filter((p) => p.id !== me.id);
   if (voting.closed) return (
     <Card className="p-6 text-center space-y-3 max-w-md mx-auto">
-      <div className="text-3xl">🏆</div>
+      <Trophy className="w-8 h-8 mx-auto text-amber-500" />
       <div className="font-bold">投票は締め切られました</div>
       <Btn className="w-full" onClick={() => setRoute("voteResult")}>結果を見る</Btn>
     </Card>
   );
   if (voting.myVote) return (
     <Card className="p-6 text-center space-y-3 max-w-md mx-auto">
-      <div className="text-3xl">✅</div>
+      <CheckCircle2 className="w-8 h-8 mx-auto text-emerald-500" />
       <div className="font-bold">投票済みです(1人1回)</div>
       <p className="text-xs text-slate-500">結果は投票締切後に公開されます。</p>
       <Btn color="slate" className="w-full" onClick={() => setRoute("voteResult")}>結果ページへ</Btn>
@@ -1533,7 +1756,7 @@ function Vote({ me, enriched, voting, setRoute, onVote }) {
   };
   return (
     <div className="space-y-3 max-w-md mx-auto">
-      <h2 className="font-bold text-lg lg:text-xl px-1">🗳 ポイント投票</h2>
+      <h2 className="font-bold text-lg lg:text-xl px-1 flex items-center gap-2"><VoteIcon className="w-5 h-5" />ポイント投票</h2>
       <Card className="p-3 text-xs text-slate-500">
         今日いちばん活躍したと思う人を<b>1人だけ</b>選んで投票してください(自分は選べません)。
         得票数の順位に応じてポイントを獲得できます:<b>1位3P / 2位2P / 3位1P</b>。
@@ -1541,13 +1764,13 @@ function Vote({ me, enriched, voting, setRoute, onVote }) {
       <div className="space-y-2">
         {candidates.map((p) => (
           <button key={p.id} onClick={() => setPick(p.id)}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl border text-left transition ${pick === p.id ? "border-indigo-600 bg-indigo-50" : "border-slate-200 bg-white hover:border-indigo-300"}`}>
-            <span className={`w-6 h-6 rounded-full border-2 flex items-center justify-center shrink-0 ${pick === p.id ? "border-indigo-600 bg-indigo-600" : "border-slate-300"}`}>
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl border text-left transition ${pick === p.id ? "border-brand-600 bg-brand-50" : "border-slate-200 bg-white hover:border-brand-300"}`}>
+            <span className={`w-6 h-6 rounded-full border-2 flex items-center justify-center shrink-0 ${pick === p.id ? "border-brand-600 bg-brand-600" : "border-slate-300"}`}>
               {pick === p.id && <span className="w-2 h-2 rounded-full bg-white" />}
             </span>
-            <span className="w-9 h-9 rounded-full bg-indigo-100 text-indigo-700 font-bold flex items-center justify-center shrink-0">{p.name[0]}</span>
+            <span className="w-9 h-9 rounded-full bg-brand-100 text-brand-700 font-bold flex items-center justify-center shrink-0">{p.name[0]}</span>
             <div className="flex-1 min-w-0">
-              <div className="font-bold text-sm">{dName(p)}</div>
+              <div className="font-bold text-sm"><BadgeMark b={p?.displayBadge} />{dName(p)}</div>
               <div className="text-xs text-slate-400">{p.curAssign?.name || "配置なし"} / {ROLE_LABEL[p.role]}</div>
             </div>
           </button>
@@ -1562,40 +1785,40 @@ function Vote({ me, enriched, voting, setRoute, onVote }) {
 function VoteResult({ state, enriched, isAdmin, me, onCloseVoting }) {
   if (!state.voting.closed) return (
     <Card className="p-6 text-center space-y-3 max-w-md mx-auto">
-      <div className="text-3xl">⏳</div>
+      <Hourglass className="w-8 h-8 mx-auto text-slate-400" />
       <div className="font-bold">投票受付中</div>
       <p className="text-xs text-slate-500">{state.voting.votedCount} / {enriched.length} 名が投票済み。結果は締切後に公開されます。</p>
       {isAdmin && <Btn className="w-full" onClick={onCloseVoting}>投票を締め切る(管理者)</Btn>}
     </Card>
   );
   const results = [...enriched].sort((a, b) => (a.todayRank || 999) - (b.todayRank || 999));
-  const medal = { 1: "🥇", 2: "🥈", 3: "🥉" };
+  const medalColor = { 1: "text-amber-500", 2: "text-slate-400", 3: "text-amber-700" };
   const top3 = results.filter((r) => r.todayRank <= 3 && r.todayVotes > 0).slice(0, 3);
   return (
     <div className="space-y-3 max-w-md mx-auto">
-      <h2 className="font-bold text-lg lg:text-xl px-1">🏆 ポイント結果</h2>
+      <h2 className="font-bold text-lg lg:text-xl px-1 flex items-center gap-2"><Trophy className="w-5 h-5 text-amber-500" />ポイント結果</h2>
       <div className="grid grid-cols-3 gap-2">
         {top3.map((p) => (
           <Card key={p.id} className={`p-3 text-center ${p.todayRank === 1 ? "border-amber-300 bg-amber-50" : ""}`}>
-            <div className="text-2xl">{medal[p.todayRank]}</div>
-            <div className="font-bold text-sm mt-1 truncate">{dName(p)}</div>
+            <Medal className={`w-6 h-6 mx-auto ${medalColor[p.todayRank]}`} />
+            <div className="font-bold text-sm mt-1 truncate"><BadgeMark b={p?.displayBadge} />{dName(p)}</div>
             <div className="text-xs text-slate-400">{p.todayVotes}票</div>
-            <div className="text-lg font-bold text-indigo-700 tabular-nums">+{p.todayPoints}P</div>
+            <div className="text-lg font-bold text-brand-700 tabular-nums">+{p.todayPoints}P</div>
           </Card>
         ))}
       </div>
       <Card className="divide-y divide-slate-100">
         {results.map((p) => (
-          <div key={p.id} className={`flex items-center gap-3 px-4 py-2.5 ${p.id === me.id ? "bg-indigo-50" : ""}`}>
+          <div key={p.id} className={`flex items-center gap-3 px-4 py-2.5 ${p.id === me.id ? "bg-brand-50" : ""}`}>
             <span className="w-9 text-center font-bold text-slate-400 tabular-nums">{p.todayRank}位</span>
-            <span className="flex-1 font-bold text-sm truncate">{dName(p)}{p.id === me.id && <span className="text-xs text-indigo-600 ml-1">(自分)</span>}</span>
+            <span className="flex-1 font-bold text-sm truncate"><BadgeMark b={p?.displayBadge} />{dName(p)}{p.id === me.id && <span className="text-xs text-brand-600 ml-1">(自分)</span>}</span>
             <span className="text-xs text-slate-400">{p.todayVotes}票</span>
-            <span className="font-bold text-indigo-700 tabular-nums w-10 text-right">{p.todayPoints > 0 ? `+${p.todayPoints}P` : "—"}</span>
+            <span className="font-bold text-brand-700 tabular-nums w-10 text-right">{p.todayPoints > 0 ? `+${p.todayPoints}P` : "—"}</span>
           </div>
         ))}
       </Card>
       <Card className="p-3 text-xs text-slate-500">
-        1位=🏆MVP、初ポイント=⚡、累計10P到達=💎のバッジが自動付与されます。マイページで名前の前に表示するバッジを選べます。アカウント保有者はポイントが累計へ加算されます。
+        現場1位・初ポイント獲得・累計10P到達などの節目でバッジが自動付与されます。マイページで名前の前に表示するバッジを選べます。アカウント保有者はポイントが累計へ加算されます。
       </Card>
     </div>
   );
@@ -1633,7 +1856,7 @@ function GlobalMyPageScreen({ user, say, fail, onBack }) {
     <Shell title="マイページ" onBack={onBack}>
       <div className="space-y-3">
         <Card className="p-4 flex items-center gap-3">
-          <span className="w-12 h-12 rounded-full bg-indigo-600 text-white text-lg font-bold flex items-center justify-center">{user?.name?.[0]}</span>
+          <span className="w-12 h-12 rounded-full bg-brand-600 text-white text-lg font-bold flex items-center justify-center">{user?.name?.[0]}</span>
           <div>
             <div className="font-bold">{user?.name}</div>
             <div className="text-xs text-slate-500">{user?.email}</div>
@@ -1643,7 +1866,7 @@ function GlobalMyPageScreen({ user, say, fail, onBack }) {
         <Card className="p-4">
           <div className="flex items-center justify-between">
             <div>
-              <div className="text-sm font-bold text-slate-700">🔒 2段階認証</div>
+              <div className="text-sm font-bold text-slate-700 flex items-center gap-1.5"><Lock className="w-4 h-4" />2段階認証</div>
               <div className="text-xs text-slate-500 mt-0.5">{totpEnabled ? "有効になっています" : "認証アプリでログイン時のコード確認を追加できます"}</div>
             </div>
             {totpEnabled
@@ -1682,21 +1905,21 @@ function GlobalMyPageScreen({ user, say, fail, onBack }) {
 
             <Card className="p-4">
               <div className="flex items-center justify-between text-xs font-bold mb-1">
-                <span className="text-slate-700">💎 次の10P到達まで</span>
-                <span className="text-indigo-700 tabular-nums">{total}P / {nextMilestone}P</span>
+                <span className="text-slate-700 flex items-center gap-1.5"><Gem className="w-3.5 h-3.5" />次の10P到達まで</span>
+                <span className="text-brand-700 tabular-nums">{total}P / {nextMilestone}P</span>
               </div>
               <div className="h-2.5 bg-slate-100 rounded-full overflow-hidden">
-                <div className="h-full bg-indigo-500" style={{ width: `${((total % 10) / 10) * 100}%` }} />
+                <div className="h-full bg-brand-500" style={{ width: `${((total % 10) / 10) * 100}%` }} />
               </div>
             </Card>
 
             <Card className="p-4">
-              <div className="text-sm font-bold text-slate-700 mb-2">🎖 獲得バッジ</div>
+              <div className="text-sm font-bold text-slate-700 mb-2 flex items-center gap-1.5"><Award className="w-4 h-4" />獲得バッジ</div>
               {my.badges.length === 0 && <p className="text-xs text-slate-400">まだバッジがありません。現場に参加してポイントを獲得しましょう。</p>}
               <div className="flex flex-wrap gap-2">
                 {my.badges.map((b) => (
                   <span key={b} className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-100 text-sm font-bold">
-                    {b}<span className="text-xs font-normal text-slate-500">{BADGE_INFO[b] || ""}</span>
+                    <BadgeMark b={b} className="w-4 h-4" /><span className="text-xs font-normal text-slate-500">{BADGE_INFO[b] || ""}</span>
                   </span>
                 ))}
               </div>
@@ -1704,11 +1927,11 @@ function GlobalMyPageScreen({ user, say, fail, onBack }) {
             </Card>
 
             <Card className="p-4">
-              <div className="text-sm font-bold text-slate-700 mb-2">📁 過去の参加現場</div>
+              <div className="text-sm font-bold text-slate-700 mb-2 flex items-center gap-1.5"><History className="w-4 h-4" />過去の参加現場</div>
               {my.history.length === 0 && <p className="text-xs text-slate-400">まだ終了した現場がありません。</p>}
               {my.history.map((h, i) => (
                 <div key={i} className="py-2 border-b border-slate-50">
-                  <div className="flex justify-between text-sm font-bold"><span>{h.site_name}</span><span className="text-indigo-700">+{h.today_points}P</span></div>
+                  <div className="flex justify-between text-sm font-bold"><span>{h.site_name}</span><span className="text-brand-700">+{h.today_points}P</span></div>
                   <div className="text-xs text-slate-400">{h.event_date} / {h.today_rank}位</div>
                 </div>
               ))}
@@ -1788,7 +2011,7 @@ function BillingScreen({ say, fail, onBack }) {
         {billing === null && !loadErr && <Card className="p-6 text-center text-sm text-slate-400">読み込み中...</Card>}
         {billing?.freeMode && (
           <Card className="p-4 border-emerald-300 bg-emerald-50">
-            <div className="text-sm font-bold text-emerald-800">🎉 現在、チーム作成・AI提案ともに無料でご利用いただけます</div>
+            <div className="text-sm font-bold text-emerald-800 flex items-center gap-1.5"><PartyPopper className="w-4 h-4" />現在、チーム作成・AI提案ともに無料でご利用いただけます</div>
             <p className="text-xs text-emerald-600 mt-0.5">決済の準備が整い次第、通常のプランに移行する予定です。今は何も購入する必要はありません。</p>
           </Card>
         )}
@@ -1802,12 +2025,12 @@ function BillingScreen({ say, fail, onBack }) {
           <>
             {billing.compUnlimited && (
               <Card className="p-4 border-emerald-300 bg-emerald-50">
-                <div className="text-sm font-bold text-emerald-800">🎁 招待コードにより、AI提案が無期限で使い放題です</div>
+                <div className="text-sm font-bold text-emerald-800 flex items-center gap-1.5"><Gift className="w-4 h-4" />招待コードにより、AI提案が無期限で使い放題です</div>
               </Card>
             )}
             {!billing.compUnlimited && billing.dayPassActive && (
               <Card className="p-4 border-emerald-300 bg-emerald-50">
-                <div className="text-sm font-bold text-emerald-800">☕ ポイント交換の1日パス利用中</div>
+                <div className="text-sm font-bold text-emerald-800 flex items-center gap-1.5"><Coffee className="w-4 h-4" />ポイント交換の1日パス利用中</div>
                 <div className="text-xs text-emerald-600 mt-0.5">{fmtHM(billing.dayPassExpiresAt)} まで有効(本日中)</div>
               </Card>
             )}
@@ -1822,14 +2045,14 @@ function BillingScreen({ say, fail, onBack }) {
                   {busy === "portal" ? "処理中..." : "契約内容を管理・解約する"}
                 </Btn>
               )}
-              <p className="text-xs text-emerald-600 font-bold mt-2 bg-emerald-50 rounded-lg px-2.5 py-2">
-                🎁 決済準備中につき、毎月クレジット{MONTHLY_FREE_CREDITS}回分を無料で自動付与しています(月初めに反映)。
+              <p className="text-xs text-emerald-600 font-bold mt-2 bg-emerald-50 rounded-lg px-2.5 py-2 flex items-start gap-1.5">
+                <Gift className="w-4 h-4 shrink-0 mt-0.5" />決済準備中につき、毎月クレジット{MONTHLY_FREE_CREDITS}回分を無料で自動付与しています(月初めに反映)。
               </p>
             </Card>
 
             {isSubscribed && billing.teamQuota && (
               <Card className="p-4">
-                <div className="text-sm font-bold text-slate-700 mb-2">📁 チーム作成の無料枠</div>
+                <div className="text-sm font-bold text-slate-700 mb-2 flex items-center gap-1.5"><Folder className="w-4 h-4" />チーム作成の無料枠</div>
                 <div className="grid grid-cols-2 gap-2 text-center">
                   <div className="bg-slate-50 rounded-lg py-2">
                     <div className="text-xs font-bold text-slate-400">本日</div>
@@ -1846,15 +2069,15 @@ function BillingScreen({ say, fail, onBack }) {
 
             {!billing.paymentsReady && (
               <Card className="p-3 border-amber-200 bg-amber-50">
-                <p className="text-xs font-bold text-amber-700">🚧 決済機能は現在準備中です。下記はプレビューです。プランを選んでも、実際のお支払いは今しばらくお待ちください。</p>
+                <p className="text-xs font-bold text-amber-700 flex items-start gap-1.5"><Construction className="w-4 h-4 shrink-0 mt-0.5" />決済機能は現在準備中です。下記はプレビューです。プランを選んでも、実際のお支払いは今しばらくお待ちください。</p>
               </Card>
             )}
 
             {/* 月額プラン */}
-            <Card className={`p-4 ${!isSubscribed ? "border-indigo-300 ring-1 ring-indigo-100" : ""}`}>
+            <Card className={`p-4 ${!isSubscribed ? "border-brand-300 ring-1 ring-brand-100" : ""}`}>
               <div className="flex items-center justify-between mb-1">
-                <div className="text-sm font-bold text-slate-700">✨ 月額プラン</div>
-                {isSubscribed && <span className="text-xs font-bold bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full">契約中</span>}
+                <div className="text-sm font-bold text-slate-700 flex items-center gap-1.5"><Sparkles className="w-4 h-4" />月額プラン</div>
+                {isSubscribed && <span className="text-xs font-bold bg-brand-100 text-brand-700 px-2 py-0.5 rounded-full">契約中</span>}
               </div>
               <div className="text-2xl font-bold">¥980<span className="text-sm font-normal text-slate-400">/月</span></div>
               <ul className="mt-2 space-y-1">
@@ -1869,7 +2092,7 @@ function BillingScreen({ say, fail, onBack }) {
                   </Btn>
                   {comingSoonFor === "sub" && (
                     <div className="mt-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2.5 text-center">
-                      <div className="text-xs font-bold text-amber-800">🚧 決済機能は現在準備中です</div>
+                      <div className="text-xs font-bold text-amber-800 flex items-center justify-center gap-1.5"><Construction className="w-3.5 h-3.5" />決済機能は現在準備中です</div>
                       <p className="text-xs text-amber-600 mt-0.5">クレジットカードでのお支払いは今後実装予定です。もうしばらくお待ちください。</p>
                     </div>
                   )}
@@ -1879,14 +2102,14 @@ function BillingScreen({ say, fail, onBack }) {
 
             {/* クレジット(都度払い) */}
             <Card className="p-4">
-              <div className="text-sm font-bold text-slate-700 mb-1">☕ クレジット(都度払い)</div>
+              <div className="text-sm font-bold text-slate-700 mb-1 flex items-center gap-1.5"><Coffee className="w-4 h-4" />クレジット(都度払い)</div>
               <p className="text-xs text-slate-500 mb-3">AI提案1回、または無料枠を超えたチーム作成1件につき1クレジット消費します。有効期限はありません。クレジットカードのほかPayPayもご利用いただけます。</p>
               <div className="space-y-2">
                 {BUNDLES.map((b) => (
                   <button key={b.key} onClick={() => setSelectedBundle(b.key)}
-                    className={`w-full flex items-center justify-between border rounded-lg px-3 py-2.5 text-left transition ${selectedBundle === b.key ? "border-indigo-500 bg-indigo-50" : "border-slate-200 bg-white"}`}>
+                    className={`w-full flex items-center justify-between border rounded-lg px-3 py-2.5 text-left transition ${selectedBundle === b.key ? "border-brand-500 bg-brand-50" : "border-slate-200 bg-white"}`}>
                     <div className="flex items-center gap-2.5">
-                      <span className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 ${selectedBundle === b.key ? "border-indigo-600 bg-indigo-600" : "border-slate-300"}`}>
+                      <span className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 ${selectedBundle === b.key ? "border-brand-600 bg-brand-600" : "border-slate-300"}`}>
                         {selectedBundle === b.key && <span className="w-2 h-2 rounded-full bg-white" />}
                       </span>
                       <div>
@@ -1906,14 +2129,14 @@ function BillingScreen({ say, fail, onBack }) {
               </Btn>
               {comingSoonFor === "credits" && (
                 <div className="mt-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2.5 text-center">
-                  <div className="text-xs font-bold text-amber-800">🚧 決済機能は現在準備中です</div>
+                  <div className="text-xs font-bold text-amber-800 flex items-center justify-center gap-1.5"><Construction className="w-3.5 h-3.5" />決済機能は現在準備中です</div>
                   <p className="text-xs text-amber-600 mt-0.5">クレジットカード・PayPayでのお支払いは今後実装予定です。それまでは上記の「毎月無料付与クレジット」「ポイント交換」「招待コード」をご利用ください。</p>
                 </div>
               )}
             </Card>
 
             <Card className="p-4">
-              <div className="text-sm font-bold text-slate-700 mb-2">☕ ポイントで交換</div>
+              <div className="text-sm font-bold text-slate-700 mb-2 flex items-center gap-1.5"><Coffee className="w-4 h-4" />ポイントで交換</div>
               <p className="text-xs text-slate-500 mb-3">
                 投票で貯まった累計ポイント(現在 <b>{billing.totalPoints}P</b>)を使って、AI提案1日使い放題パスと交換できます。1回の交換で{POINT_DAY_PASS_COST}P消費し、再利用はできません。
               </p>
@@ -1923,7 +2146,7 @@ function BillingScreen({ say, fail, onBack }) {
             </Card>
 
             <Card className="p-4">
-              <div className="text-sm font-bold text-slate-700 mb-2">🎟 招待コードをお持ちの方</div>
+              <div className="text-sm font-bold text-slate-700 mb-2 flex items-center gap-1.5"><Ticket className="w-4 h-4" />招待コードをお持ちの方</div>
               <div className="flex gap-2">
                 <input className={inputCls} value={codeInput} onChange={(e) => setCodeInput(e.target.value)} placeholder="例:FRIEND-XXXXXXXX" />
                 <Btn onClick={redeem} disabled={!codeInput.trim() || !!busy} className="shrink-0 py-2.5 text-sm">{busy === "redeem" ? "確認中..." : "利用する"}</Btn>
@@ -1939,6 +2162,25 @@ function BillingScreen({ say, fail, onBack }) {
 }
 
 /* ================================ 管理ページ(作成者専用) ================================ */
+/* 直近N日の推移を表す簡易バーチャート(外部ライブラリ不使用、ホバー/タップで日付と値を確認できる) */
+function MiniBarChart({ labels, values, color, unit = "" }) {
+  const max = Math.max(1, ...values);
+  return (
+    <div className="overflow-x-auto">
+      <div className="flex items-end gap-0.5" style={{ height: 64, minWidth: labels.length * 7 }}>
+        {values.map((v, i) => (
+          <div key={i} title={`${labels[i]}: ${v.toLocaleString()}${unit}`}
+            className={`rounded-t ${color}`} style={{ width: 5, height: `${Math.max(2, (v / max) * 60)}px` }} />
+        ))}
+      </div>
+      <div className="flex justify-between text-xs text-slate-400 mt-1 font-mono">
+        <span>{labels[0]}</span>
+        <span>{labels[labels.length - 1]}</span>
+      </div>
+    </div>
+  );
+}
+
 function AdminScreen({ say, fail, onBack }) {
   const [tab, setTab] = useState("overview"); // overview / codes / users
   const [overview, setOverview] = useState(null);
@@ -1981,7 +2223,7 @@ function AdminScreen({ say, fail, onBack }) {
   };
 
   return (
-    <Shell title="🛠 管理ページ" onBack={onBack}>
+    <Shell title={<span className="flex items-center gap-1.5"><Wrench className="w-4 h-4" />管理ページ</span>} onBack={onBack}>
       <div className="space-y-3">
         <div className="flex gap-1 overflow-x-auto pb-1">
           {[["overview", "概要"], ["codes", "招待コード"], ["users", "ユーザー"]].map(([k, l]) => (
@@ -2011,6 +2253,23 @@ function AdminScreen({ say, fail, onBack }) {
                   <div className="text-xs font-bold text-emerald-700">累計売上(Stripe決済実績)</div>
                   <div className="text-3xl font-bold text-emerald-800 mt-1">¥{overview.totalRevenueYen.toLocaleString()}</div>
                 </Card>
+                {overview.dailyStats && (
+                  <Card className="p-4 space-y-4">
+                    <div className="text-sm font-bold text-slate-700">直近30日の推移</div>
+                    <div>
+                      <div className="text-xs font-bold text-slate-500 mb-1">新規登録者数(合計{overview.dailyStats.newUsers.reduce((a, b) => a + b, 0)}人)</div>
+                      <MiniBarChart labels={overview.dailyStats.labels} values={overview.dailyStats.newUsers} color="bg-brand-500" unit="人" />
+                    </div>
+                    <div>
+                      <div className="text-xs font-bold text-slate-500 mb-1">新規チーム作成数(合計{overview.dailyStats.newTeams.reduce((a, b) => a + b, 0)}件)</div>
+                      <MiniBarChart labels={overview.dailyStats.labels} values={overview.dailyStats.newTeams} color="bg-violet-500" unit="件" />
+                    </div>
+                    <div>
+                      <div className="text-xs font-bold text-slate-500 mb-1">売上推移(合計¥{overview.dailyStats.revenueYen.reduce((a, b) => a + b, 0).toLocaleString()})</div>
+                      <MiniBarChart labels={overview.dailyStats.labels} values={overview.dailyStats.revenueYen} color="bg-emerald-500" unit="円" />
+                    </div>
+                  </Card>
+                )}
                 <Card className="overflow-hidden">
                   <div className="px-4 pt-3 pb-1"><h3 className="text-sm font-bold text-slate-700">最近の入金</h3></div>
                   <div className="divide-y divide-slate-100">
@@ -2037,7 +2296,7 @@ function AdminScreen({ say, fail, onBack }) {
               <div className="text-sm font-bold text-slate-700">招待コードを発行</div>
               <div className="flex gap-1 bg-slate-100 rounded-lg p-1">
                 {[["friend_unlimited", "友人向け無制限"], ["credit_grant", "クレジット付与"]].map(([k, l]) => (
-                  <button key={k} onClick={() => setForm({ ...form, kind: k })} className={`flex-1 py-2 rounded-md text-xs font-bold leading-tight ${(form.kind || "friend_unlimited") === k ? "bg-white shadow text-indigo-700" : "text-slate-500"}`}>{l}</button>
+                  <button key={k} onClick={() => setForm({ ...form, kind: k })} className={`flex-1 py-2 rounded-md text-xs font-bold leading-tight ${(form.kind || "friend_unlimited") === k ? "bg-white shadow text-brand-700" : "text-slate-500"}`}>{l}</button>
                 ))}
               </div>
               <p className="text-xs text-slate-500">
@@ -2073,7 +2332,7 @@ function AdminScreen({ say, fail, onBack }) {
                   {c.expiresAt && ` / 期限:${new Date(c.expiresAt).toLocaleDateString("ja-JP")}`}
                 </div>
                 <div className="flex gap-2 mt-2">
-                  <button onClick={() => copyCode(c.code)} className="text-xs font-bold text-indigo-600 px-2 py-1 bg-indigo-50 rounded-lg">コピー</button>
+                  <button onClick={() => copyCode(c.code)} className="text-xs font-bold text-brand-600 px-2 py-1 bg-brand-50 rounded-lg">コピー</button>
                   <button onClick={() => toggleCode(c.code, !c.active)} className={`text-xs font-bold px-2 py-1 rounded-lg ${c.active ? "text-rose-600 bg-rose-50" : "text-emerald-600 bg-emerald-50"}`}>
                     {c.active ? "無効化する" : "再度有効化する"}
                   </button>
@@ -2131,9 +2390,9 @@ function MyPage({ p, team, hasAccount, onSetBadge }) {
     <div className="space-y-3 max-w-md mx-auto">
       <h2 className="font-bold text-lg lg:text-xl px-1">マイページ</h2>
       <Card className="p-4 flex items-center gap-3">
-        <span className="w-12 h-12 rounded-full bg-indigo-600 text-white text-lg font-bold flex items-center justify-center">{p.name[0]}</span>
+        <span className="w-12 h-12 rounded-full bg-brand-600 text-white text-lg font-bold flex items-center justify-center">{p.name[0]}</span>
         <div>
-          <div className="font-bold">{dName(p)}</div>
+          <div className="font-bold"><BadgeMark b={p?.displayBadge} />{dName(p)}</div>
           <RoleTag r={p.role} />
         </div>
       </Card>
@@ -2150,11 +2409,11 @@ function MyPage({ p, team, hasAccount, onSetBadge }) {
           </div>
           <Card className="p-4">
             <div className="flex items-center justify-between text-xs font-bold mb-1">
-              <span className="text-slate-700">💎 次の10P到達まで</span>
-              <span className="text-indigo-700 tabular-nums">{total}P / {nextMilestone}P</span>
+              <span className="text-slate-700 flex items-center gap-1.5"><Gem className="w-3.5 h-3.5" />次の10P到達まで</span>
+              <span className="text-brand-700 tabular-nums">{total}P / {nextMilestone}P</span>
             </div>
             <div className="h-2.5 bg-slate-100 rounded-full overflow-hidden">
-              <div className="h-full bg-indigo-500" style={{ width: `${((total % 10) / 10) * 100}%` }} />
+              <div className="h-full bg-brand-500" style={{ width: `${((total % 10) / 10) * 100}%` }} />
             </div>
             <p className="text-slate-400 mt-1" style={{ fontSize: 10 }}>10P到達ごと・MVP獲得など「良いタイミング」でバッジが付与されます。</p>
           </Card>
@@ -2167,39 +2426,39 @@ function MyPage({ p, team, hasAccount, onSetBadge }) {
       )}
 
       <Card className="p-4">
-        <div className="text-sm font-bold text-slate-700 mb-1">🎖 バッジ(名前の前に表示するものを選択)</div>
+        <div className="text-sm font-bold text-slate-700 mb-1 flex items-center gap-1.5"><Award className="w-4 h-4" />バッジ(名前の前に表示するものを選択)</div>
         <div className="grid grid-cols-2 gap-2 mt-2">
           <button onClick={() => onSetBadge("")}
-            className={`px-3 py-2.5 rounded-xl border text-sm font-bold ${p.displayBadge === "" ? "border-indigo-600 bg-indigo-50" : "border-slate-200"}`}>
+            className={`px-3 py-2.5 rounded-xl border text-sm font-bold ${p.displayBadge === "" ? "border-brand-600 bg-brand-50" : "border-slate-200"}`}>
             表示なし
           </button>
           {p.badges.map((b) => (
             <button key={b} onClick={() => onSetBadge(b)}
-              className={`px-3 py-2.5 rounded-xl border text-left ${p.displayBadge === b ? "border-indigo-600 bg-indigo-50" : "border-slate-200"}`}>
-              <span className="text-lg">{b}</span>
+              className={`px-3 py-2.5 rounded-xl border text-left ${p.displayBadge === b ? "border-brand-600 bg-brand-50" : "border-slate-200"}`}>
+              <BadgeMark b={b} className="w-5 h-5" />
               <div className="font-bold text-slate-500" style={{ fontSize: 10 }}>{BADGE_INFO[b] || ""}</div>
             </button>
           ))}
         </div>
         {p.badges.length === 0 && <p className="text-xs text-slate-400 mt-2">まだバッジがありません。投票で入賞するか、10Pを貯めて獲得しましょう。</p>}
         <div className="mt-3 bg-slate-50 rounded-lg px-3 py-2 text-xs">
-          プレビュー:<span className="font-bold ml-1">{dName(p)}</span>
+          プレビュー:<span className="font-bold ml-1"><BadgeMark b={p?.displayBadge} />{dName(p)}</span>
         </div>
       </Card>
 
       {team.votingClosed && p.todayRank && (
-        <Card className="p-4 bg-indigo-50 border-indigo-200">
-          <div className="text-sm font-bold text-indigo-800">本日の結果 — {team.siteName}</div>
-          <div className="text-xs text-indigo-700 mt-1">現場内 <b>{p.todayRank}位</b>({p.todayVotes}票)/ 獲得 <b>+{p.todayPoints}P</b></div>
+        <Card className="p-4 bg-brand-50 border-brand-200">
+          <div className="text-sm font-bold text-brand-800">本日の結果 — {team.siteName}</div>
+          <div className="text-xs text-brand-700 mt-1">現場内 <b>{p.todayRank}位</b>({p.todayVotes}票)/ 獲得 <b>+{p.todayPoints}P</b></div>
         </Card>
       )}
 
       {hasAccount && my?.history?.length > 0 && (
         <Card className="p-4">
-          <div className="text-sm font-bold text-slate-700 mb-2">📁 過去の参加現場</div>
+          <div className="text-sm font-bold text-slate-700 mb-2 flex items-center gap-1.5"><History className="w-4 h-4" />過去の参加現場</div>
           {my.history.map((h, i) => (
             <div key={i} className="py-2 border-b border-slate-50">
-              <div className="flex justify-between text-sm font-bold"><span>{h.site_name}</span><span className="text-indigo-700">+{h.today_points}P</span></div>
+              <div className="flex justify-between text-sm font-bold"><span>{h.site_name}</span><span className="text-brand-700">+{h.today_points}P</span></div>
               <div className="text-xs text-slate-400">{h.event_date} / {h.today_rank}位</div>
             </div>
           ))}
@@ -2213,19 +2472,19 @@ function MyPage({ p, team, hasAccount, onSetBadge }) {
 function NotifyScreen({ state, isAdmin, onSend, onReadAll, onRead }) {
   const [type, setType] = useState("一斉連絡");
   const [text, setText] = useState("");
-  const typeStyle = { 休憩不足: "bg-rose-600 text-white", 一斉連絡: "bg-indigo-600 text-white", 緊急連絡: "bg-amber-500 text-white", 休憩終了: "bg-emerald-600 text-white", バッジ獲得: "bg-violet-600 text-white" };
+  const typeStyle = { 休憩不足: "bg-rose-600 text-white", 一斉連絡: "bg-brand-600 text-white", 緊急連絡: "bg-amber-500 text-white", 休憩終了: "bg-emerald-600 text-white", バッジ獲得: "bg-violet-600 text-white" };
   return (
     <div className="space-y-3 max-w-md mx-auto">
       <div className="flex items-center justify-between px-1">
         <h2 className="font-bold text-lg">通知</h2>
-        <button onClick={onReadAll} className="text-xs font-bold text-indigo-600">すべて既読</button>
+        <button onClick={onReadAll} className="text-xs font-bold text-brand-600">すべて既読</button>
       </div>
       {isAdmin && (
         <Card className="p-4 space-y-2">
-          <div className="text-sm font-bold text-slate-700">📢 連絡を送信(管理者)</div>
+          <div className="text-sm font-bold text-slate-700 flex items-center gap-1.5"><Megaphone className="w-4 h-4" />連絡を送信(管理者)</div>
           <div className="flex gap-1">
             {["一斉連絡", "緊急連絡"].map((t) => (
-              <button key={t} onClick={() => setType(t)} className={`flex-1 py-2 rounded-lg text-xs font-bold ${type === t ? (t === "緊急連絡" ? "bg-amber-500 text-white" : "bg-indigo-600 text-white") : "bg-slate-100 text-slate-500"}`}>{t}</button>
+              <button key={t} onClick={() => setType(t)} className={`flex-1 py-2 rounded-lg text-xs font-bold ${type === t ? (t === "緊急連絡" ? "bg-amber-500 text-white" : "bg-brand-600 text-white") : "bg-slate-100 text-slate-500"}`}>{t}</button>
             ))}
           </div>
           <input className={inputCls} value={text} onChange={(e) => setText(e.target.value)} placeholder="例:15:00から入口誘導を増員してください" />
@@ -2233,14 +2492,14 @@ function NotifyScreen({ state, isAdmin, onSend, onReadAll, onRead }) {
         </Card>
       )}
       {state.notifications.map((n) => (
-        <Card key={n.id} className={`p-3 ${!n.read ? "border-indigo-300" : ""}`}>
+        <Card key={n.id} className={`p-3 ${!n.read ? "border-brand-300" : ""}`}>
           <div className="flex items-start gap-2">
             <span className={`font-bold px-1.5 py-0.5 rounded shrink-0 ${typeStyle[n.type] || "bg-slate-500 text-white"}`} style={{ fontSize: 10 }}>{n.type}</span>
             <div className="flex-1 min-w-0">
               <div className="text-sm font-medium">{n.text}</div>
               <div className="text-slate-400 font-mono mt-0.5" style={{ fontSize: 10 }}>{fmtHM(n.time)}</div>
             </div>
-            {!n.read && <button onClick={() => onRead(n.id)} className="text-xs font-bold text-indigo-600 shrink-0">既読</button>}
+            {!n.read && <button onClick={() => onRead(n.id)} className="text-xs font-bold text-brand-600 shrink-0">既読</button>}
           </div>
         </Card>
       ))}

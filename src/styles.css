@@ -1,1 +1,22 @@
 @import "tailwindcss";
+
+/* design-tokens.yaml と対応。既存のslate/violet/amber等の状態色パレットは維持し、
+   汎用indigo-600のみ独自トーンのbrandに置き換える */
+@theme {
+  --font-sans: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+  --color-brand-50: #EEF1F8;
+  --color-brand-100: #DCE2F0;
+  --color-brand-200: #B9C5E1;
+  --color-brand-300: #8DA0CB;
+  --color-brand-400: #56699A;
+  --color-brand-500: #324670;
+  --color-brand-600: #22345E;
+  --color-brand-700: #1A2749;
+  --color-brand-800: #141D38;
+  --color-brand-900: #0F1629;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-weight: 500;
+}

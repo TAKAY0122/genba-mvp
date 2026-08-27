@@ -93,6 +93,12 @@ export const api = {
   editAssign: (id, aid, b) => call("PATCH", `/api/v1/teams/${id}/assignments/${aid}`, b, teamToken(id)),
   delAssign: (id, aid) => call("DELETE", `/api/v1/teams/${id}/assignments/${aid}`, null, teamToken(id)),
 
+  // 持ち場テンプレート
+  templates: () => call("GET", "/api/v1/templates", null, store.getSession()),
+  templateItems: (tplId) => call("GET", `/api/v1/templates/${tplId}`, null, store.getSession()),
+  deleteTemplate: (tplId) => call("DELETE", `/api/v1/templates/${tplId}`, null, store.getSession()),
+  saveTemplate: (id, name) => call("POST", `/api/v1/teams/${id}/templates`, { name }, teamToken(id)),
+
   // チャット・通知
   sendChat: (id, text) => call("POST", `/api/v1/teams/${id}/chat`, { text }, teamToken(id)),
   sendNotify: (id, b) => call("POST", `/api/v1/teams/${id}/notifications`, b, teamToken(id)),

@@ -1,0 +1,49 @@
+# design-tokens.yaml
+# genba-mvp デザイントークン(ドラフト・要承認 — 内容はこの後の回答で確定します)
+meta:
+  design_system_reference: "Material Design 3(モバイル操作性・タップ領域・状態表現を重視したトンマナ)"
+  note: "プライマリカラーはDeep Navy案(#22345E)で確定。ワイヤーフレーム承認後、詳細デザイン段階でMD3のコンポーネント仕様(elevation・state layer等)を当てはめる"
+
+colors:
+  # ブランド/プライマリ(現行の汎用indigo-600から、独自トーンのネイビーに変更する提案)
+  primary: "#22345E"        # プライマリボタン・アクティブナビ・見出しアクセント
+  primary_hover: "#1A2749"
+  primary_soft: "#EEF1F8"   # プライマリの淡色背景(選択状態など)
+
+  # AI機能アクセント(既存のvioletを継続。プライマリと十分離れた色相で機能を区別する)
+  ai_accent: "#6D4AFF"
+  ai_accent_soft: "#F3F0FF"
+
+  # 勤怠ステータス色(現行の配色ロジックをそのまま踏襲。スタッフが既に覚えている配色のため変更しない)
+  status_working: "#0E9F6E"   # 勤務中
+  status_break: "#D97706"     # 休憩中
+  status_before: "#0284C7"    # 開始前
+  status_done: "#94A3B8"      # 退勤済み
+  status_danger: "#DC2626"    # 退勤・削除・エラー等の破壊的操作
+
+  # ニュートラル(現行のslateパレットを継続。既に一貫して使われているため変更しない)
+  neutral_900: "#0F172A"
+  neutral_800: "#1E293B"
+  neutral_500: "#64748B"
+  neutral_200: "#E2E8F0"
+  neutral_100: "#F1F5F9"
+  background: "#FFFFFF"
+
+typography:
+  font_family: "-apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Noto Sans JP', system-ui, sans-serif"
+  heading_weight: 700
+  body_weight: 500           # 現行の400よりわずかに太くし、屋外・短時間閲覧時の可読性を上げる
+  heading_tracking: "-0.01em"
+
+spacing:
+  base_unit: 4px             # 既存Tailwindデフォルトを踏襲(変更なし)
+
+radius:
+  sm: 6px                    # 入力欄・小要素
+  default: 12px              # カード・ボタン(現行のrounded-xlを継続、値を明文化)
+  pill: 9999px                # バッジ・ステータス・トースト
+
+icons:
+  library: "lucide-react"
+  rule: "絵文字はUIアイコンとして使用しない。ナビゲーション・見出し・ボタンは全てアウトラインアイコン(lucide-react)+テキストラベルに置き換える"
+  exception: "マイページの実績バッジ(🏆💎☕⚡)はゲーム性のある報酬表現として残す案と、カスタムバッジアイコン化する案の両方があり得るため別途検討"
