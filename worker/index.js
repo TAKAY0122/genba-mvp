@@ -660,10 +660,12 @@ app.get("/api/v1/teams/:id/state", async (c) => {
       const taken = brks.results.filter((b) => b.participant_id === p.id).reduce((a, b) => a + minDiff(b.start_at, b.end_at ?? t), 0);
       const remain = req - taken;
       if (remain <= 0) continue;
-      const dup = await c.env.DB.prepare(
-        "SELECT id FROM notifications WHERE team_id = ? AND target_participant_id = ? AND type = '休憩不足' AND auto = 1 AND created_at >= ? LIMIT 1"
-      ).bind(teamId, p.id, t - HOUR_MS).first();
-      if (dup) continue;
+      // 複数の管理者が同時にポーリングしても重複送信しないよう、SELECT→INSERTではなく
+      // 条件付きUPDATE+meta.changesで「通知してよいか」を排他的に判定する
+      const claim = await c.env.DB.prepare(
+        "UPDATE participants SET last_break_alert_at = ? WHERE id = ? AND (last_break_alert_at IS NULL OR last_break_alert_at < ?)"
+      ).bind(t, p.id, t - HOUR_MS).run();
+      if (!claim.meta.changes) continue;
       await c.env.DB.prepare(
         "INSERT INTO notifications (team_id, type, text, target_participant_id, auto, created_at) VALUES (?,?,?,?,1,?)"
       ).bind(teamId, "休憩不足", `【自動】${p.name}さんの休憩取得が不足しています(必要${req}分に対し取得${taken}分、シフト終了まで残り${Math.max(0, untilEnd)}分)。`, p.id, t).run();
@@ -842,6 +844,7 @@ app.post("/api/v1/teams/:id/templates", async (c) => {
     await c.env.DB.prepare("INSERT INTO assignment_template_items (template_id, start_hm, end_hm, name, note, sort_order) VALUES (?,?,?,?,?,?)")
       .bind(templateId, fmtHM(a.start_at), fmtHM(a.end_at), a.name, a.note || "", order++).run();
   }
+  await audit(c.env, teamId, actorName(me), "テンプレート", "テンプレート保存", "—", `${name}(${asgs.length}件)`);
   return ok(c, { id: templateId });
 });
 

@@ -973,7 +973,17 @@ function TeamApp({ teamId, user, say, fail, exitTeam, logout, openBilling }) {
       )}
       {modal?.type === "bulkAssign" && (
         <BulkAssignModal enriched={enriched} team={team} fail={fail} onClose={() => setModal(null)}
-          onSubmit={(items) => run(async () => { for (const it of items) await api.addAssign(teamId, it); }, `${items.length}件の配置を登録しました`)} />
+          onSubmit={(items) => run(async () => {
+            let okCount = 0;
+            let lastError = "";
+            for (const it of items) {
+              try { await api.addAssign(teamId, it); okCount++; }
+              catch (e) { lastError = e.message || "登録に失敗しました"; }
+            }
+            if (okCount < items.length) {
+              throw new Error(`${okCount}/${items.length}件を登録しました。残り${items.length - okCount}件は失敗しました(${lastError})。失敗分は内容を確認し、再度お試しください。`);
+            }
+          }, `${items.length}件の配置を登録しました`)} />
       )}
     </div>
   );
@@ -1560,7 +1570,11 @@ function BulkAssignModal({ enriched, team, onClose, onSubmit, fail }) {
 
   useEffect(() => { api.templates().then((d) => setTemplates(d.templates)).catch(() => setTemplates([])); }, []);
 
-  const matchPid = (name) => enriched.find((p) => p.name === name)?.id || "";
+  // 同名の参加者が複数いる場合は誤って別人に割り当てないよう、一意に一致する場合のみ自動選択する
+  const matchPid = (name) => {
+    const matches = enriched.filter((p) => p.name === name);
+    return matches.length === 1 ? matches[0].id : "";
+  };
 
   const loadFromCSV = (file) => {
     const reader = new FileReader();
@@ -1581,6 +1595,14 @@ function BulkAssignModal({ enriched, team, onClose, onSubmit, fail }) {
     try {
       const d = await api.templateItems(tplId);
       setRows(d.items.map((it) => ({ pid: "", rawName: "", start: it.start, end: it.end, name: it.name, note: it.note })));
+    } catch (e) { fail(e); }
+  };
+
+  const deleteTemplate = async (tplId, name) => {
+    if (!confirm(`テンプレート「${name}」を削除しますか?`)) return;
+    try {
+      await api.deleteTemplate(tplId);
+      setTemplates((ts) => ts.filter((t) => t.id !== tplId));
     } catch (e) { fail(e); }
   };
 
@@ -1614,13 +1636,20 @@ function BulkAssignModal({ enriched, team, onClose, onSubmit, fail }) {
           </label>
           <button onClick={downloadSample} className="flex-1 text-xs font-bold text-slate-600 bg-slate-100 rounded-lg py-2">サンプルCSVをダウンロード</button>
         </div>
-        <Field label="保存済みテンプレートから読み込む">
-          <select className={inputCls} defaultValue="" onChange={(e) => applyTemplate(e.target.value)}>
-            <option value="">選択してください</option>
-            {templates?.map((t) => <option key={t.id} value={t.id}>{t.name}({t.itemCount}件)</option>)}
-          </select>
+        <div>
+          <label className="text-xs font-bold text-slate-500">保存済みテンプレートから読み込む</label>
+          {!templates && <p className="text-xs text-slate-400 mt-1">読み込み中...</p>}
           {templates && templates.length === 0 && <p className="text-xs text-slate-400 mt-1">保存済みテンプレートはまだありません。配置管理画面の「テンプレート保存」から作成できます。</p>}
-        </Field>
+          <div className="space-y-1.5 mt-1.5">
+            {templates?.map((t) => (
+              <div key={t.id} className="flex items-center gap-2 px-3 py-2 bg-slate-50 rounded-lg">
+                <span className="text-sm font-bold flex-1 min-w-0 truncate">{t.name}<span className="text-xs font-normal text-slate-400 ml-1">({t.itemCount}件)</span></span>
+                <button onClick={() => applyTemplate(t.id)} className="text-xs font-bold text-brand-600 bg-brand-50 px-2 py-1 rounded-lg shrink-0">読み込む</button>
+                <button onClick={() => deleteTemplate(t.id, t.name)} aria-label={`テンプレート「${t.name}」を削除`} className="text-rose-500 px-1 shrink-0"><X className="w-4 h-4" /></button>
+              </div>
+            ))}
+          </div>
+        </div>
 
         {rows.length > 0 && (
           <div className="space-y-2 overflow-y-auto" style={{ maxHeight: "40vh" }}>
