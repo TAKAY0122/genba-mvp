@@ -344,10 +344,35 @@ app.post("/api/v1/register", async (c) => {
   return ok(c, { token, user: { id, email, name, avatarUrl: null }, isSiteAdmin: isSiteAdmin(c.env, { email }) });
 });
 
+/* パスワードログインの総当たり対策: メールアドレス単位で8回失敗したら15分ロックする */
+const LOGIN_FAIL_LIMIT = 8;
+const LOGIN_LOCKOUT_MS = 15 * 60 * 1000;
+
 app.post("/api/v1/login", async (c) => {
   const { email, password } = await c.req.json();
+  const attemptKey = (email || "").trim().toLowerCase();
+  const t = now();
+  const attempt = await c.env.DB.prepare("SELECT locked_until FROM login_attempts WHERE email = ?").bind(attemptKey).first();
+  if (attempt?.locked_until) {
+    if (attempt.locked_until > t) {
+      return ng(c, "AUTH-005", "ログイン試行回数が多いため、しばらく時間をおいて再度お試しください。", 429);
+    }
+    // ロック期間が過ぎた分は破棄し、以降は新規扱いで数え直す
+    await c.env.DB.prepare("DELETE FROM login_attempts WHERE email = ?").bind(attemptKey).run();
+  }
   const u = await c.env.DB.prepare("SELECT * FROM users WHERE email = ?").bind(email || "").first();
-  if (!u || !(await verifyPassword(password || "", u.password_hash))) return ng(c, "AUTH-001", "メールアドレスまたはパスワードが違います。", 401);
+  if (!u || !(await verifyPassword(password || "", u.password_hash))) {
+    // fail_countの加算はDB側のCASE式で行う(アプリ側でSELECTしてから書き込むと、並行リクエストで加算が失われ総当たり対策が無効化される)
+    await c.env.DB.prepare(
+      `INSERT INTO login_attempts (email, fail_count, locked_until, updated_at) VALUES (?, 1, NULL, ?)
+       ON CONFLICT(email) DO UPDATE SET
+         fail_count = login_attempts.fail_count + 1,
+         locked_until = CASE WHEN login_attempts.fail_count + 1 >= ? THEN ? ELSE login_attempts.locked_until END,
+         updated_at = ?`
+    ).bind(attemptKey, t, LOGIN_FAIL_LIMIT, t + LOGIN_LOCKOUT_MS, t).run();
+    return ng(c, "AUTH-001", "メールアドレスまたはパスワードが違います。", 401);
+  }
+  await c.env.DB.prepare("DELETE FROM login_attempts WHERE email = ?").bind(attemptKey).run();
   if (u.totp_enabled) {
     const pendingToken = await createTwoFactorPending(c.env, u.id);
     return ok(c, { require2fa: true, pendingToken });
