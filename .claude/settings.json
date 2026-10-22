@@ -1,0 +1,34 @@
+{
+  "permissions": {
+    "deny": [
+      "Edit(.dev.vars)",
+      "Write(.dev.vars)",
+      "Edit(.wrangler/**)",
+      "Write(.wrangler/**)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/git-guard.cjs",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/check-wrangler-secrets.cjs",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

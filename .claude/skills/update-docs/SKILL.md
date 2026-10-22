@@ -15,19 +15,19 @@ description: 機能追加・修正後に、影響する開発ドキュメント�
 
    | 変更の種類 | 更新するスクリプト |
    |---|---|
-   | APIの追加・変更 | `../docgen_export/gen_api_spec.cjs` |
-   | DBスキーマの変更(テーブル・列の追加等) | `../docgen_export/gen_table_er.cjs`、`../docgen_export/gen_basic_design.cjs` |
-   | 画面の追加・変更 | `../docgen_export/gen_screen_design.cjs`、`../docgen_export/gen_sitemap.cjs` |
-   | 計算ロジック・アルゴリズムの変更(課金判定等) | `../docgen_export/gen_detail_design.cjs` |
-   | Reactコンポーネントの追加・整理 | `../docgen_export/gen_components.cjs` |
-   | コーディング規約に関わる変更 | `../docgen_export/gen_coding_rules.cjs` |
-   | 操作方法が変わる変更 | `../docgen_export/gen_manual_pptx.cjs` |
-   | インフラ構成の変更 | `../docgen_export/gen_system_diagram.cjs`、`../docgen_export/gen_service_diagram.cjs` |
-   | デプロイ手順の変更 | `../docgen_export/gen_release.cjs` |
-   | 上記以外で機能一覧に影響する変更 | `../docgen_export/gen_spec.cjs`(機能一覧書) |
-   | 大規模な機能追加(スコープが変わるレベル) | `../docgen_export/gen_requirements.cjs`、`../docgen_export/gen_rfp.cjs`、`../docgen_export/gen_quotation.cjs` も検討 |
+   | APIの追加・変更 | `../docgen_export/scripts/gen_api_spec.cjs` |
+   | DBスキーマの変更(テーブル・列の追加等) | `../docgen_export/scripts/gen_table_er.cjs`、`../docgen_export/scripts/gen_basic_design.cjs` |
+   | 画面の追加・変更 | `../docgen_export/scripts/gen_screen_design.cjs`、`../docgen_export/scripts/gen_sitemap.cjs` |
+   | 計算ロジック・アルゴリズムの変更(課金判定等) | `../docgen_export/scripts/gen_detail_design.cjs` |
+   | Reactコンポーネントの追加・整理 | `../docgen_export/scripts/gen_components.cjs` |
+   | コーディング規約に関わる変更 | `../docgen_export/scripts/gen_coding_rules.cjs` |
+   | 操作方法が変わる変更 | `../docgen_export/scripts/gen_manual_pptx.cjs` |
+   | インフラ構成の変更 | `../docgen_export/scripts/gen_system_diagram.cjs`、`../docgen_export/scripts/gen_service_diagram.cjs` |
+   | デプロイ手順の変更 | `../docgen_export/scripts/gen_release.cjs` |
+   | 上記以外で機能一覧に影響する変更 | `../docgen_export/scripts/gen_spec.cjs`(機能一覧書) |
+   | 大規模な機能追加(スコープが変わるレベル) | `../docgen_export/scripts/gen_requirements.cjs`、`../docgen_export/scripts/gen_rfp.cjs`、`../docgen_export/scripts/gen_quotation.cjs` も検討 |
 
-3. 該当する `gen_*.cjs` の中身(テキスト・表の内容)を、実際の変更に合わせて編集する。`../docgen_export/common.cjs` の共通関数(`h1`, `h2`, `h3`, `p`, `bullet`, `makeTable`, `makeCover`, `revisionHistory`, `diagramBox`, `diagramArrow`, `OUT_DIR` 等)は変更せず再利用する。
+3. 該当する `gen_*.cjs` の中身(テキスト・表の内容)を、実際の変更に合わせて編集する。`../docgen_export/scripts/common.cjs` の共通関数(`h1`, `h2`, `h3`, `p`, `bullet`, `makeTable`, `makeCover`, `revisionHistory`, `diagramBox`, `diagramArrow`, `OUT_DIR` 等)は変更せず再利用する。
 
 4. 改訂履歴(`revisionHistory` の呼び出し部分)に、変更内容を表す行を1行追加する(既存行は消さない)。例:
    ```js
@@ -39,7 +39,7 @@ description: 機能追加・修正後に、影響する開発ドキュメント�
 
 5. 該当するスクリプトを実行して再生成する:
    ```bash
-   node ../docgen_export/gen_XXX.cjs
+   node ../docgen_export/scripts/gen_XXX.cjs
    ```
    複数該当する場合はすべて実行する。まとめて全部再生成したい場合は:
    ```bash
